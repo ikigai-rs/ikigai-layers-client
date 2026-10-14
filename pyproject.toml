@@ -1,0 +1,68 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ikigai-layers-client"
+version = "0.1.0"
+description = "Talk to an ikigai layer door over QUIC with nothing but Python: the ikigai-layers command"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT OR Apache-2.0"
+authors = [{ name = "Brian Sletten" }]
+keywords = ["ikigai", "layers", "quic", "collaboration"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+# ikigai-python is not on PyPI yet, so it is pinned as a GIT dependency at the commit that
+# merged its QUIC transport (ikigai-rs/ikigai-python PR 35). Move the pin when this client
+# needs something newer; replace it with a version once ikigai is published.
+# `cryptography` is named because certs.py imports it directly (ikigai[quic] requires it
+# too); 42 is the floor aioquic 1.2 sets.
+dependencies = [
+  "ikigai[quic] @ git+https://github.com/ikigai-rs/ikigai-python@9f3f467cdd355727efda7074e7ace3b7976fc3b8",
+  "cryptography>=42",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+ikigai-layers = "ikigai_layers_client.cli:run"
+
+[project.urls]
+Homepage = "https://github.com/ikigai-rs/ikigai-layers-client"
+Repository = "https://github.com/ikigai-rs/ikigai-layers-client"
+Issues = "https://github.com/ikigai-rs/ikigai-layers-client/issues"
+
+[tool.hatch.metadata]
+# The git pin above is a direct reference, which hatchling refuses unless told.
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ikigai_layers_client"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "D1"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ikigai_layers_client", "tests"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "src"]
+pythonpath = ["."]
+addopts = "--doctest-modules --import-mode=importlib"
+filterwarnings = ["error::pytest.PytestUnhandledThreadExceptionWarning"]

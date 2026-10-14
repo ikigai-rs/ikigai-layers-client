@@ -1,0 +1,19 @@
+# What may be said in `talk`: a Message, CLOSED. The last three properties are the host's
+# stamps (who, when, where in the feed); a writer that sends one is refused before validation.
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix ik: <https://ikigai-rs.dev/ns#> .
+
+<urn:layers:shape:message> a sh:NodeShape ;
+  sh:targetClass ik:Message ;
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  sh:property
+    [ sh:path ik:body ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:maxLength 16384 ] ,
+    [ sh:path ik:inReplyTo ; sh:maxCount 1 ; sh:nodeKind sh:IRI ; sh:pattern "^urn:layer:talk:entry:" ] ,
+    [ sh:path prov:wasAttributedTo ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ,
+    [ sh:path dcterms:created ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ,
+    [ sh:path ik:seq ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:integer ] .

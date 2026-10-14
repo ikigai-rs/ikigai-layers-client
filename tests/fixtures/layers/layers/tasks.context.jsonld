@@ -1,0 +1,6 @@
+{ "@context": {
+  "ik": "https://ikigai-rs.dev/ns#",
+  "dcterms": "http://purl.org/dc/terms/",
+  "Offer": "ik:Offer",
+  "title": "dcterms:title"
+} }

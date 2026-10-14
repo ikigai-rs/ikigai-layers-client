@@ -1,0 +1,12 @@
+# The test collaboration, served as urn:collab:demo. The fixture writes the door's
+# grants.json and clients.json to match it, since the fingerprints are made per run.
+label = "Demo"
+
+[[mount]]
+layer = "talk"
+alice       = ["read", "feed", "say"]
+alice-agent = ["read", "feed", "say"]
+
+[[mount]]
+layer = "tasks"
+alice = ["read", "feed", "out", "take"]

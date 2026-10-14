@@ -1,0 +1,5 @@
+# Line endings: LF in the repository and in every checkout, whatever core.autocrlf says
+# (a collaborator on Windows or WSL may check out with CRLF otherwise).
+* text=auto eol=lf
+*.py  text eol=lf
+*.ttl text eol=lf

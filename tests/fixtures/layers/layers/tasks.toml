@@ -1,0 +1,5 @@
+# A task tuplespace for the tests, served as urn:layer:tasks.
+model   = "tuplespace"
+label   = "Tasks"
+shapes  = "tasks.shapes.ttl"
+context = "tasks.context.jsonld"

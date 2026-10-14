@@ -1,0 +1,12 @@
+{ "@context": {
+  "ik": "https://ikigai-rs.dev/ns#",
+  "dcterms": "http://purl.org/dc/terms/",
+  "prov": "http://www.w3.org/ns/prov#",
+  "xsd": "http://www.w3.org/2001/XMLSchema#",
+  "Message": "ik:Message",
+  "body": "ik:body",
+  "inReplyTo": { "@id": "ik:inReplyTo", "@type": "@id" },
+  "attributedTo": { "@id": "prov:wasAttributedTo", "@type": "@id" },
+  "created": { "@id": "dcterms:created", "@type": "xsd:dateTime" },
+  "seq": { "@id": "ik:seq", "@type": "xsd:integer" }
+} }

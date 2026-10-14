@@ -1,0 +1,6 @@
+# A message channel for the tests, served as urn:layer:talk.
+model     = "channel"
+label     = "Talk"
+shapes    = "talk.shapes.ttl"
+context   = "talk.context.jsonld"
+entry_max = "16KiB"

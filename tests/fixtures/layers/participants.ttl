@@ -1,0 +1,8 @@
+# Who each principal on the test door is.
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+<urn:collab:participant:alice>       a foaf:Person ; rdfs:label "Alice" .
+<urn:collab:participant:alice-agent> a prov:SoftwareAgent ; rdfs:label "Alice's agent" ;
+                                     prov:actedOnBehalfOf <urn:collab:participant:alice> .

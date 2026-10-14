@@ -1,0 +1,17 @@
+# What may be offered in `tasks`: an Offer with a title, CLOSED, plus the host's stamps.
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix ik: <https://ikigai-rs.dev/ns#> .
+
+<urn:layers:shape:offer> a sh:NodeShape ;
+  sh:targetClass ik:Offer ;
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  sh:property
+    [ sh:path dcterms:title ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ] ,
+    [ sh:path prov:wasAttributedTo ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ,
+    [ sh:path dcterms:created ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ,
+    [ sh:path ik:seq ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:integer ] .
