@@ -99,8 +99,9 @@ def test_say_then_read_then_follow(door, capsys, tmp_path):
     code, out, _ = run(capsys, "follow", "--once", "--state", str(state), *door.args("alice-agent"))
     assert code == 0
     lines = out.splitlines()
+    # The door's six fields, then what the entry is (read from the entry itself).
     assert lines[0].startswith("talk 1 ") and lines[0].endswith(
-        "say " + said + " urn:collab:participant:alice"
+        "say " + said + ' urn:collab:participant:alice Message "Hello from Python."'
     )
     assert state.read_text().startswith("talk:")
     # A second --once read prints nothing new.

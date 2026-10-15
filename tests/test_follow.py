@@ -181,3 +181,100 @@ def test_layers_not_followed_are_kept_in_the_state_file(tmp_path):
     f, _, _, _ = follower(tmp_path, [[event("talk", 1)]])
     assert f.run(once=True) == 0
     assert read_state(str(tmp_path / "cursor")) == {"other": 4, "talk": 1}
+
+
+def describing(tmp_path, script, nodes, **kwargs):
+    door = FakeDoor(script)
+    door.entry_reads = []
+
+    class Graph:
+        def __init__(self, node):
+            self.data = json.dumps({"@context": {}, "@graph": [node]}).encode()
+
+    def source(iri, **args):
+        if iri == "urn:layers:feed":
+            return FakeDoor.source(door, iri, **args)
+        door.entry_reads.append(iri)
+        node = nodes[iri]
+        if isinstance(node, Exception):
+            raise node
+        return Graph(node)
+
+    door.source = source
+    lines = []
+    f = Follower(
+        lambda timeout: door,
+        layers=["talk"],
+        state=str(tmp_path / "cursor"),
+        wait=50,
+        say=lines.append,
+        sleep=lambda s: None,
+        **kwargs,
+    )
+    return f, door, lines
+
+
+NODES = {
+    "urn:layer:talk:entry:1": {
+        "@id": "urn:layer:talk:entry:1",
+        "@type": "Issue",
+        "title": "Crash on start",
+        "severity": "urn:iki:severity:major",
+    },
+    "urn:layer:talk:entry:2": {
+        "@id": "urn:layer:talk:entry:2",
+        "@type": "File",
+        "fileName": "log.txt",
+        "byteSize": "12",
+        "mediaType": "text/plain",
+        "contentHash": "sha256:" + "c" * 64,
+        "content": "SECRET CONTENT",
+    },
+}
+
+
+def test_describe_adds_the_kind_and_summary_never_the_content(tmp_path):
+    f, door, lines = describing(
+        tmp_path, [[event("talk", 1), event("talk", 2)]], NODES, describe=True
+    )
+    assert f.run(once=True) == 0
+    assert lines[0].endswith('urn:collab:participant:alice Issue major "Crash on start"')
+    assert lines[1].endswith("File log.txt 12 bytes text/plain sha256:cccccccccccc…")
+    assert "SECRET" not in "\n".join(lines)
+    assert door.entry_reads == ["urn:layer:talk:entry:1", "urn:layer:talk:entry:2"]
+
+
+def test_kinds_skip_other_entries_and_still_advance(tmp_path):
+    f, door, lines = describing(
+        tmp_path, [[event("talk", 1), event("talk", 2)]], NODES, kinds={"File"}
+    )
+    assert f.run(once=True) == 0
+    assert len(lines) == 1 and " log.txt " not in lines[0]  # no describe: the door's line only
+    assert lines[0].split()[4] == "urn:layer:talk:entry:2"
+    assert read_state(str(tmp_path / "cursor")) == {"talk": 2}
+
+
+def test_a_replayed_event_is_not_read_again(tmp_path):
+    (tmp_path / "cursor").write_text("talk:1\n")
+    f, door, lines = describing(
+        tmp_path, [[event("talk", 1), event("talk", 2)]], NODES, describe=True
+    )
+    assert f.run(once=True) == 0
+    assert door.entry_reads == ["urn:layer:talk:entry:2"] and len(lines) == 1
+
+
+def test_an_entry_read_that_fails_prints_nothing_and_keeps_the_cursor(tmp_path):
+    nodes = dict(NODES)
+    nodes["urn:layer:talk:entry:2"] = ikigai.ConnectionLost("gone")
+    f, door, lines = describing(
+        tmp_path, [[event("talk", 1), event("talk", 2)]], nodes, describe=True
+    )
+    assert f.run(once=True) == 5
+    assert not [line for line in lines if line.startswith("talk ")]
+    assert read_state(str(tmp_path / "cursor")) == {"talk": 0}
+
+
+def test_plain_reads_no_entry(tmp_path):
+    f, door, lines = describing(tmp_path, [[event("talk", 1)]], NODES)
+    assert f.run(once=True) == 0
+    assert door.entry_reads == [] and lines[0].endswith("urn:collab:participant:alice")

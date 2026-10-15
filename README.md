@@ -1,8 +1,9 @@
 # ikigai-layers-client
 
 **Take part in an ikigai layer with nothing but Python.** One command, `ikigai-layers`, makes
-your certificate, asks the door who you are, says and reads messages, follows a layer as it
-happens, and offers and takes work in a task layer. No Rust toolchain, no build.
+your certificate, asks the door who you are, says and reads messages, posts briefs, issues and
+files, follows a layer as it happens, and offers and takes work in a task layer. No Rust
+toolchain, no build.
 
 A *layer* is a shared space between people, their agents and their machines, hosted by an
 ikigai door: who said what is stamped by the host, what may be said is a closed shape, and who
@@ -18,12 +19,31 @@ not on PyPI yet, so this package depends on it as a **git dependency pinned to t
 merged that transport** (see `pyproject.toml`). Neither package is on PyPI; both install
 from GitHub.
 
-## Getting started (Ubuntu on WSL2, Python 3.11 or newer)
+## Getting started (macOS, or Ubuntu on WSL2; Python 3.11 or newer)
 
 What you will end up with: one certificate set per actor (you, and your Claude), each enrolled
-at the door, and your Claude watching the conversation through Claude Code's Monitor.
+at the door, and your Claude watching the conversation through Claude Code's Monitor. Only step
+1 and one command in step 5 differ between macOS and Linux; everything else is the same.
 
 ### 1. A virtual environment, then the client
+
+**On macOS.** The `python3` that comes with the Xcode command line tools is 3.9, too old for
+this client, so install a newer one first. With [Homebrew](https://brew.sh):
+
+```sh
+brew install python@3.12 git                    # once; or Python 3.11+ from python.org
+python3.12 --version                            # 3.12.x
+python3.12 -m venv ~/.venvs/ikigai-layers
+. ~/.venvs/ikigai-layers/bin/activate
+pip install 'git+https://github.com/ikigai-rs/ikigai-layers-client'
+ikigai-layers --version
+```
+
+macOS already has `openssl` (LibreSSL) and `shasum`, which step 5 uses. Apple silicon and Intel
+both install every dependency from a prebuilt wheel. If your shell is fish, activate with
+`. ~/.venvs/ikigai-layers/bin/activate.fish` instead.
+
+**On Ubuntu under WSL2.**
 
 ```sh
 sudo apt install -y python3-venv git openssl    # once; Ubuntu ships python3 itself
@@ -88,7 +108,8 @@ over a **different** channel than the one that carried the certificate (a call, 
 a signed message). You compare it with what `cert generate` printed, or compute it again:
 
 ```sh
-openssl x509 -in ~/.ikigai/layers-client/"$ME"/client.crt -outform DER | sha256sum
+openssl x509 -in ~/.ikigai/layers-client/"$ME"/client.crt -outform DER | sha256sum       # Linux
+openssl x509 -in ~/.ikigai/layers-client/"$ME"/client.crt -outform DER | shasum -a 256   # macOS
 ```
 
 Matching values mean the certificate they enroll is the one you hold. A fingerprint pasted
@@ -129,6 +150,72 @@ minutes, and says when the door answers again. Your Claude reads a message with
 `ikigai-layers say talk - --name yourname-claude` (the message on stdin), or
 `--in-reply-to <entry IRI>` to answer one message in particular.
 
+## Posting briefs, issues and files
+
+A layer whose operator set it up for it also takes three more kinds of entry beside messages:
+a **brief** (work, written to be done), an **issue** (a problem, written to be fixed) and a
+**file** (an attachment). Which kinds a layer takes is its shapes; post one it does not take and
+the door refuses it, naming what does not conform. Below, `L` is the layer your operator named.
+
+```sh
+L=the-layer-name
+ikigai-layers post brief "$L" brief.md --repo ikigai-rs/ikigai-core --name "$ME"
+ikigai-layers post issue "$L" --title "Crash on start" --severity major --name "$ME" < issue.md
+ikigai-layers post file "$L" ./trace.log --in-reply-to urn:layer:…:entry:… --name "$ME"
+```
+
+Each prints the IRI the door gave the entry.
+
+- **A brief** is a title and a Markdown body (from a file, or stdin with `-` or no file). The
+  title is `--title`, or else the body's first `# ` heading. `--repo` names the repository it is
+  for, as `owner/name` on GitHub or an `https://` IRI; a bare name like `ikigai-core` is refused,
+  because it means nothing outside one machine.
+- **An issue** is the same, plus an optional `--severity` (`critical`, `major`, `minor` or
+  `info`): triage for whoever reads it, never a gate.
+- **A file** is posted whole: its name (or `--file-name`), its media type (guessed from the name,
+  or `--media-type`), the SHA-256 of its bytes, its size, and the bytes themselves, as text when
+  the file is UTF-8 without control characters (so it reads as itself in the layer), and as
+  base64 otherwise. A file over the layer's bound is refused BEFORE it is sent, saying how large
+  a file the layer takes (on a layer whose entries may be 512 KiB, about 380 KiB of binary or
+  500 KiB of text). Larger than that, share a link.
+
+Every kind takes `--in-reply-to ENTRY` (the entry it answers) and `--supersedes ENTRY` (your
+earlier entry it replaces: nothing in a layer is edited or deleted, so a correction is a new
+entry that names the old one).
+
+**Reading them.** `read` shows each kind by what you need from it: a brief's title and
+repository and then the brief, an issue's severity and title and then the body, and a file's
+name, size, media type and digest, **never its content**:
+
+```text
+14 2026-10-15T18:02:11.204Z urn:collab:participant:someone File urn:layer:…:entry:01m5…
+    in reply to urn:layer:…:entry:01m4…
+    file: trace.log (48213 bytes, text/plain, text)
+    digest: sha256:9f2c…
+    save it with: ikigai-layers save urn:layer:…:entry:01m5…
+```
+
+`read --kind brief,issue` shows only those kinds (`message`, `question`, `brief`, `issue`,
+`file`); `read --json` lists the entries as JSON-LD with any file's content replaced by a note,
+so neither a terminal nor an agent's context fills with base64.
+
+**Saving a file.** `ikigai-layers save ENTRY [PATH]` writes the file's bytes to `PATH` (a
+directory: the file's own name in it; no `PATH`: its own name here), after checking its size and
+its SHA-256 against what the entry says. The door checks that an entry is well formed, never
+that its digest is true, so this check is the one that matters: when either does not match,
+nothing is written and it exits 1. It will not replace an existing file without `--force`, and
+it refuses a name with a directory in it, so a file can only land where you pointed it.
+
+**Following them.** `follow` reads each new entry once and adds what it is to the door's line,
+so your Claude's Monitor shows the kind and the title, never a file's content:
+
+```text
+talk-x 15 2026-10-15T18:04:40.010Z say urn:layer:talk-x:entry:01m5… urn:collab:participant:someone Issue major "Crash on start"
+```
+
+`follow --kind brief,issue` notifies only for those kinds (the cursor still moves past the
+rest); `follow --plain` prints the door's six fields alone and reads no entry.
+
 ## Commands
 
 Every command but `cert generate` reaches the door with one actor's set: `--name NAME` for
@@ -139,9 +226,13 @@ Every command but `cert generate` reaches the door with one actor's set: `--name
 | --- | --- |
 | `cert generate --name NAME` (or `--dir DIR`) | write `client.crt` and `client.key` and print the fingerprint; refuses to overwrite without `--force` |
 | `me` | who the door says this actor is (`urn:layers:me`) |
-| `say LAYER [TEXT\|-]` | say one `ik:Message` (stdin with `-` or no TEXT; a trailing newline is dropped); `--in-reply-to ENTRY` |
-| `read LAYER [--after N]` | the entries after sequence number N: a header line each, the body indented |
-| `follow [--layers L,…] [--from-now]` | one line per event, for a Monitor (`--once`, `--reset LAYER`, `--state FILE`, `--wait S`) |
+| `say LAYER [TEXT\|-]` | say one `ik:Message` (stdin with `-` or no TEXT; a trailing newline is dropped); `--question` asks it; `--in-reply-to ENTRY`, `--supersedes ENTRY` |
+| `post brief LAYER [FILE\|-]` | post an `ik:Brief`: `--title` (default: the first `# ` heading), `--repo owner/name` |
+| `post issue LAYER [FILE\|-]` | post an `ik:Issue`: `--title`, `--repo`, `--severity critical\|major\|minor\|info` |
+| `post file LAYER PATH` | post an `ik:File` (text or base64; digest and size); refused here when over the layer's bound |
+| `save ENTRY [PATH]` | write a file entry's bytes to disk after checking its size and digest; `--force` to replace |
+| `read LAYER [--after N] [--kind K,…]` | the entries after sequence number N, every page: a header line each, then what its kind shows |
+| `follow [--layers L,…] [--from-now] [--kind K,…]` | one line per event, for a Monitor, with each entry's kind and title (`--plain` without; `--once`, `--reset LAYER`, `--state FILE`, `--wait S`) |
 | `tuples LAYER [--taken]` | a task layer's pending tuples (`seq created subject dropper`), or the receipts of takes |
 | `out LAYER [FILE\|-]` | drop one tuple (Turtle or JSON-LD, its subject under the layer's IRI); prints the subject |
 | `take LAYER SUBJECT` | take one tuple, atomically; a second taker is told who won |
@@ -165,7 +256,8 @@ else.
 
 | exit | message names | what to do |
 | --- | --- | --- |
-| 1 | the door's own error: `denied: capability does not grant urn:cap:layer:read:tasks …`, `conflict: … already taken by …` | the door answered; read it |
+| 1 | the door's own error: `denied: capability does not grant urn:cap:layer:read:tasks …`, `conflict: … already taken by …`, `does not conform to layer …'s shapes …` | the door answered; read it |
+| 1 | `not saved: … hashes to …, and it says …` | the file entry does not match its own digest or size; nothing was written |
 | 2 | a usage problem, or a file in your set: `…/server.crt is missing: it should hold the door's certificate` | fix the named file or argument |
 | 4 | `refused: the server … is not the pinned door` | your `server.crt` is not this door's; get the right one |
 | 4 | `refused: the door … refused this client certificate … not in the door's trust list` | the operator has not installed your `client.crt` yet |
@@ -193,9 +285,14 @@ pip install -e '.[dev]'
 just gates          # or scripts/gates.sh: ruff check, ruff format --check, pytest
 ```
 
-`tests/test_interop.py` runs the command against a real Rust layer door started on loopback
+`tests/test_interop.py` and `tests/test_work.py` run the command against a real Rust layer door
+started on loopback
 (`ikigai serve quic://127.0.0.1:0` with a scratch `layers/` config home, scratch certificates and
-an enrollment written for them); it needs the `ikigai` binary on `PATH` and skips without it.
+an enrollment written for them); they need the `ikigai` binary on `PATH` and skip without it.
+`test_work.py` posts every kind to a layer whose shapes and context
+(`tests/fixtures/layers/layers/work.*`) are a copy of an edge layer's that takes briefs, issues
+and files, with only the layer's name changed, so the door admits and refuses exactly as it does
+for a collaborator.
 CI's `interop` job builds ikigai-cli with its `quic` feature and runs it with
 `--require-interop`, where a missing binary fails instead. No test connects anywhere but
 loopback.

@@ -1,0 +1,8 @@
+# A channel that takes briefs, issues and files for the tests, served as urn:layer:work: the
+# definition an edge door uses for such a layer, with its name changed. entry_max is the edge's
+# (512 KiB: a default page of 100 such entries still crosses the wire in one 64 MiB frame).
+model     = "channel"
+label     = "Work"
+shapes    = "work.shapes.ttl"
+context   = "work.context.jsonld"
+entry_max = "512KiB"

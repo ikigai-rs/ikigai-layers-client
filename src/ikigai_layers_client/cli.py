@@ -3,8 +3,12 @@
     ikigai-layers cert generate --dir DIR        one actor's client identity (no server key)
     ikigai-layers me                             who the door says this actor is
     ikigai-layers say LAYER [TEXT|-]             say one message (stdin with - or no TEXT)
-    ikigai-layers read LAYER [--after N]         the entries after a sequence number
-    ikigai-layers follow [--layers L,…]          one line per event, for a Monitor
+    ikigai-layers post brief LAYER [FILE|-]      post a brief (Markdown; --title, --repo)
+    ikigai-layers post issue LAYER [FILE|-]      post an issue (--title, --repo, --severity)
+    ikigai-layers post file LAYER PATH           attach a file (text or base64, digest checked)
+    ikigai-layers save ENTRY [PATH]              write a file entry back to disk, digest checked
+    ikigai-layers read LAYER [--after N]         the entries after a sequence number (--kind)
+    ikigai-layers follow [--layers L,…]          one line per event, for a Monitor (--kind)
     ikigai-layers tuples LAYER [--taken]         a tuplespace's pending tuples (or receipts)
     ikigai-layers out LAYER [FILE|-]             drop one tuple (Turtle or JSON-LD)
     ikigai-layers take LAYER SUBJECT             take one tuple, atomically
@@ -22,18 +26,27 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
+import tempfile
 from pathlib import Path
 
 import ikigai
 from ikigai import quic
 
-from . import __version__, certs, door, follow, message
+from . import __version__, certs, door, files, follow, message, show
 
 EXIT_DOOR_ERROR = 1
 EXIT_USAGE = 2
 EXIT_REFUSED = 4
 EXIT_UNREACHABLE = 5
+
+#: Entries per ``entries`` read. Small, because a layer that takes files may hold entries of
+#: hundreds of KiB each, and every answer crosses the wire as one frame; ``read`` pages.
+PAGE = 25
+
+_ENTRY = re.compile(r"^urn:layer:([a-z0-9](?:[a-z0-9-]{0,22}[a-z0-9])?):entry:[^\s<>\"]+$")
+_HEADING = re.compile(r"^#\s+(.+?)\s*#*\s*$", re.M)
 
 
 class Usage(Exception):
@@ -88,14 +101,63 @@ def _parser() -> argparse.ArgumentParser:
 
     commands.add_parser("me", parents=[connection], help="who the door says this actor is")
 
-    say = commands.add_parser("say", parents=[connection], help="say one message in a layer")
+    thread_args = argparse.ArgumentParser(add_help=False)
+    thread_args.add_argument("--in-reply-to", metavar="ENTRY", help="the entry this answers")
+    thread_args.add_argument("--supersedes", metavar="ENTRY", help="your entry this replaces")
+
+    say = commands.add_parser(
+        "say", parents=[connection, thread_args], help="say one message in a layer"
+    )
     say.add_argument("layer")
     say.add_argument("text", nargs="?", default="-", help="the message; - (default) reads stdin")
-    say.add_argument("--in-reply-to", metavar="ENTRY", help="the entry this answers")
+    say.add_argument("--question", action="store_true", help="ask it: an ik:Question")
 
+    post = commands.add_parser("post", help="post a brief, an issue or a file")
+    kinds = post.add_subparsers(dest="post_kind", required=True, metavar="KIND")
+    for name, what in (("brief", "work, written to be done"), ("issue", "a problem to fix")):
+        p = kinds.add_parser(
+            name,
+            parents=[connection, thread_args],
+            help=f"post a {name}: {what}",
+            description=f"Post an ik:{name.title()}: a title and a Markdown body (from FILE, "
+            "or stdin with - or no FILE). The title defaults to the body's first `# ` heading.",
+        )
+        p.add_argument("layer")
+        p.add_argument("source", nargs="?", default="-", help="the body; - (default) reads stdin")
+        p.add_argument("--title", help="the title (default: the body's first `# ` heading)")
+        p.add_argument("--repo", help="the repository: owner/name on GitHub, or an https:// IRI")
+        if name == "issue":
+            p.add_argument("--severity", choices=message.SEVERITIES, help="how urgent (triage)")
+    attach = kinds.add_parser(
+        "file",
+        parents=[connection, thread_args],
+        help="attach a file",
+        description="Post an ik:File holding PATH whole: its name, media type, SHA-256 and "
+        "size, and its bytes as text (UTF-8 with no control characters but tab, newline and "
+        "carriage return) or else base64. A file over the layer's bound is refused here.",
+    )
+    attach.add_argument("layer")
+    attach.add_argument("path", help="the file to attach")
+    attach.add_argument("--file-name", help="the name to post it under (default: its own)")
+    attach.add_argument("--media-type", help="its media type (default: guessed from its name)")
+
+    save = commands.add_parser(
+        "save",
+        parents=[connection],
+        help="write a file entry back to disk",
+        description="Write a file entry's bytes to PATH (a directory: the file's own name in "
+        "it; default: the file's own name here), after checking its size and SHA-256. Nothing "
+        "is written when either does not match.",
+    )
+    save.add_argument("entry", help="the file entry's IRI (urn:layer:LAYER:entry:ID)")
+    save.add_argument("path", nargs="?", help="where to write it")
+    save.add_argument("--force", action="store_true", help="replace an existing file")
+
+    kind_help = f"only these kinds, comma-separated ({', '.join(message.KINDS)})"
     read = commands.add_parser("read", parents=[connection], help="read a layer's entries")
     read.add_argument("layer")
     read.add_argument("--after", type=int, default=0, help="entries after this sequence number")
+    read.add_argument("--kind", help=kind_help)
 
     fol = commands.add_parser(
         "follow",
@@ -122,6 +184,12 @@ def _parser() -> argparse.ArgumentParser:
         default=[],
         metavar="LAYER",
         help="set LAYER's cursor back to 0 (after a restored door), then follow",
+    )
+    fol.add_argument("--kind", help=kind_help + "; other events are skipped")
+    fol.add_argument(
+        "--plain",
+        action="store_true",
+        help="the door's event line only (no kind or title after it, no entry read per event)",
     )
     fol.add_argument("--once", action="store_true", help="one read, then exit")
     fol.add_argument("--max-reads", type=int, default=0, help="stop after N reads (0: never)")
@@ -206,7 +274,14 @@ def cmd_say(d: door.Door, args) -> int:
         text = _read_input("-", "the message").rstrip("\n")
     if not text:
         raise Usage("the message is empty")
-    turtle = message.message(text, in_reply_to=args.in_reply_to)
+    turtle = message.message(
+        text, in_reply_to=args.in_reply_to, supersedes=args.supersedes, question=args.question
+    )
+    return _say(d, args, turtle)
+
+
+def _say(d: door.Door, args, turtle: str) -> int:
+    """Write one entry to ``urn:layer:{layer}:say``; prints the IRI the door named it."""
     answer = d.sink(
         f"urn:layer:{door.layer_name(args.layer)}:say", turtle, **{"as": "application/json"}
     )
@@ -214,33 +289,176 @@ def cmd_say(d: door.Door, args) -> int:
     return 0
 
 
-def _one(value):
-    return value[0] if isinstance(value, list) and value else value
+def _titled_body(args, what: str) -> tuple[str, str]:
+    """The body (FILE, or stdin) and the title: ``--title``, else the body's first heading."""
+    body = _read_input(args.source, f"the {what}")
+    if args.source == "-":
+        body = body.rstrip("\n")
+    if not body.strip():
+        raise Usage(f"the {what} is empty")
+    title = args.title
+    if title is None:
+        heading = _HEADING.search(body)
+        if heading is None:
+            raise Usage(f"give the {what} a --title, or start it with a `# Title` line")
+        title = heading.group(1)
+    if not title.strip():
+        raise Usage("the title is empty")
+    return title.strip(), body
+
+
+def cmd_post(d: door.Door, args) -> int:
+    """Post a brief, an issue or a file; prints the entry's IRI."""
+    if args.post_kind == "file":
+        return _post_file(d, args)
+    title, body = args.prepared
+    if args.post_kind == "brief":
+        turtle = message.brief(
+            title, body, repo=args.repo, in_reply_to=args.in_reply_to, supersedes=args.supersedes
+        )
+    else:
+        turtle = message.issue(
+            title,
+            body,
+            repo=args.repo,
+            severity_name=args.severity,
+            in_reply_to=args.in_reply_to,
+            supersedes=args.supersedes,
+        )
+    return _say(d, args, turtle)
+
+
+def _file_post(args) -> tuple[str, int, str, str, str]:
+    """Read the file and build its entry: ``(name, size, turtle, encoding, content)``."""
+    path = Path(args.path).expanduser()
+    try:
+        data = path.read_bytes()
+    except OSError as e:
+        raise Usage(f"cannot read {path}: {e}") from e
+    name = args.file_name or path.name
+    turtle, encoding, content = files.file_entry(
+        name,
+        data,
+        media=args.media_type,
+        in_reply_to=args.in_reply_to,
+        supersedes=args.supersedes,
+    )
+    return name, len(data), turtle, encoding, content
+
+
+def _post_file(d: door.Door, args) -> int:
+    name, size, turtle, encoding, content = args.prepared
+    layer = door.layer_name(args.layer)
+    shapes = d.source(f"urn:layer:{layer}:shapes").text
+    if not files.takes_files(shapes):
+        raise Usage(f"layer `{layer}` does not take files: its shapes admit no ik:File")
+    bound = files.content_bound(shapes)
+    if bound is not None:
+        why = files.too_large(name, size, encoding, content, bound)
+        if why:
+            raise Usage(why)
+    return _say(d, args, turtle)
+
+
+def _entry_layer(entry: str) -> str:
+    match = _ENTRY.match(entry)
+    if match is None:
+        raise Usage(f"`{entry}` is not an entry IRI (urn:layer:LAYER:entry:ID)")
+    return match.group(1)
+
+
+def _target(name: str, path: str | None) -> Path:
+    if path is None:
+        return Path.cwd() / name
+    target = Path(path).expanduser()
+    return target / name if target.is_dir() else target
+
+
+def cmd_save(d: door.Door, args) -> int:
+    """Write a file entry's bytes to disk, after checking its size and digest."""
+    answer = d.source(args.entry, **{"as": "application/ld+json"})
+    nodes = [n for n in json.loads(answer.data).get("@graph", []) if n.get("@id") == args.entry]
+    if not nodes:
+        _err(f"not saved: the door's answer for {args.entry} holds no such entry")
+        return EXIT_DOOR_ERROR
+    node = nodes[0]
+    if show.kind(node) != "File":
+        raise Usage(f"{args.entry} is a {show.kind(node) or 'entry'}, not a file")
+    try:
+        name = files.safe_name(str(files.one(node.get("fileName"))))
+        data = files.decode(node)
+    except (ValueError, files.IntegrityError) as e:
+        _err(f"not saved: {e}")
+        return EXIT_DOOR_ERROR
+    target = _target(name, args.path)
+    if target.exists() and not args.force:
+        raise Usage(f"{target} exists: give another PATH, or --force to replace it")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".ikigai-layers-", dir=target.parent)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        # mkstemp makes the file 0600; a saved file gets the mode any new file would.
+        mask = os.umask(0)
+        os.umask(mask)
+        os.chmod(tmp, 0o666 & ~mask)
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    _out(f"saved {target} ({len(data)} bytes, {files.digest(data)})")
+    return 0
+
+
+def _kinds(value: str | None) -> set[str] | None:
+    """``--kind brief,issue`` as the classes ``{"Brief", "Issue"}``; ``None`` for every kind."""
+    if value is None:
+        return None
+    named = [k.strip().lower() for k in value.split(",") if k.strip()]
+    unknown = [k for k in named if k not in message.KINDS]
+    if not named or unknown:
+        raise Usage(
+            f"--kind takes {', '.join(message.KINDS)}"
+            + (f" (not {', '.join(unknown)})" if unknown else "")
+        )
+    return {message.KINDS[k] for k in named}
 
 
 def cmd_read(d: door.Door, args) -> int:
-    """The entries after ``--after``: a header line each, then its body indented."""
+    """The entries after ``--after``, page by page: each a header line, then what its kind
+    shows indented (:mod:`show`); ``--json`` lists them with any file content elided."""
     layer = door.layer_name(args.layer)
-    answer = d.source(
-        f"urn:layer:{layer}:entries", after=str(args.after), **{"as": "application/ld+json"}
-    )
-    if args.json:
-        _out(answer.text)
-        return 0
-    for entry in json.loads(answer.data).get("@graph", []):
-        kind = entry.get("@type", "")
-        kind = ",".join(kind) if isinstance(kind, list) else kind
-        _out(
-            f"{entry.get('seq', '?')} {entry.get('created', '?')} "
-            f"{entry.get('attributedTo', '?')} {kind} {entry.get('@id', '?')}"
+    kinds = _kinds(args.kind)
+    # One kind is filtered at the door (`type=`, an exact class); several here.
+    by_type = {"type": message.IK + next(iter(kinds))} if kinds and len(kinds) == 1 else {}
+    after, listed, context = args.after, [], None
+    while True:
+        answer = d.source(
+            f"urn:layer:{layer}:entries",
+            after=str(after),
+            limit=str(PAGE),
+            **by_type,
+            **{"as": "application/ld+json"},
         )
-        reply = _one(entry.get("inReplyTo"))
-        if reply:
-            _out(f"    in reply to {reply}")
-        body = _one(entry.get("body"))
-        if body is not None:
-            for line in str(body).splitlines() or [""]:
-                _out(f"    {line}")
+        doc = json.loads(answer.data)
+        context = doc.get("@context", context)
+        page = sorted(doc.get("@graph", []), key=lambda n: int(files.one(n.get("seq")) or 0))
+        for node in page:
+            if kinds is not None and show.kind(node) not in kinds:
+                continue
+            if args.json:
+                listed.append(show.elided(node))
+            else:
+                for line in show.lines(node):
+                    _out(line)
+        if len(page) < PAGE:
+            break
+        after = max(int(files.one(n.get("seq"))) for n in page)
+    if args.json:
+        _out(json.dumps({"@context": context or {}, "@graph": listed}))
     return 0
 
 
@@ -305,6 +523,8 @@ def cmd_follow(args, cert_dir: Path) -> int:
         wait=wait,
         say=_out,
         backoff=args.backoff,
+        describe=not args.plain,
+        kinds=_kinds(args.kind),
     )
     try:
         return follower.run(
@@ -317,6 +537,8 @@ def cmd_follow(args, cert_dir: Path) -> int:
 COMMANDS = {
     "me": cmd_me,
     "say": cmd_say,
+    "post": cmd_post,
+    "save": cmd_save,
     "read": cmd_read,
     "tuples": cmd_tuples,
     "out": cmd_out,
@@ -331,8 +553,19 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "cert":
             return cmd_cert_generate(args)
         cert_dir = _cert_dir(args)
+        # A bad name, entry, file or option is refused before anything is dialed.
         if getattr(args, "layer", None) is not None:
-            door.layer_name(args.layer)  # a bad name is refused before anything is dialed
+            door.layer_name(args.layer)
+        if args.command == "save":
+            _entry_layer(args.entry)
+        if args.command == "post" and args.post_kind == "file":
+            args.prepared = _file_post(args)
+        elif args.command == "post":
+            if args.repo is not None:
+                message.repository(args.repo)
+            args.prepared = _titled_body(args, args.post_kind)
+        if args.command in ("read", "follow"):
+            _kinds(args.kind)
         quic.parse_door(args.door)
         if args.command == "follow":
             return cmd_follow(args, cert_dir)

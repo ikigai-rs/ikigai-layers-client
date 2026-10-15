@@ -38,12 +38,18 @@ GRANTS = {
         "urn:cap:layer:read:tasks",
         "urn:cap:layer:say:talk",
         "urn:cap:layer:take:tasks",
+        "urn:cap:layer:feed:work",
+        "urn:cap:layer:read:work",
+        "urn:cap:layer:say:work",
     ],
     "alice-agent": [
         "urn:cap:collab:read:demo",
         "urn:cap:layer:feed:talk",
         "urn:cap:layer:read:talk",
         "urn:cap:layer:say:talk",
+        "urn:cap:layer:feed:work",
+        "urn:cap:layer:read:work",
+        "urn:cap:layer:say:work",
     ],
 }
 
