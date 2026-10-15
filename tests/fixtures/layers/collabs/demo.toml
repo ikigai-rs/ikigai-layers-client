@@ -10,3 +10,8 @@ alice-agent = ["read", "feed", "say"]
 [[mount]]
 layer = "tasks"
 alice = ["read", "feed", "out", "take"]
+
+[[mount]]
+layer = "work"
+alice       = ["read", "feed", "say"]
+alice-agent = ["read", "feed", "say"]

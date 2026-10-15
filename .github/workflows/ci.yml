@@ -52,5 +52,5 @@ jobs:
           "$HOME/.cargo/bin/ikigai" --version
       - name: Install
         run: python -m pip install -e '.[dev]'
-      - name: Interop (ikigai-layers against a local Rust layer door)
-        run: python -m pytest -q --require-interop tests/test_interop.py
+      - name: Interop (ikigai-layers against a local Rust layer door, every entry kind)
+        run: python -m pytest -q --require-interop tests/test_interop.py tests/test_work.py
