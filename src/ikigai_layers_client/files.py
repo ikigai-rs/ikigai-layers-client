@@ -23,7 +23,10 @@ import base64
 import binascii
 import hashlib
 import mimetypes
+import os
 import re
+import sys
+import unicodedata
 from pathlib import Path
 
 from .message import entry, literal
@@ -79,12 +82,78 @@ def encode(data: bytes) -> tuple[str, str]:
     return "base64", base64.b64encode(data).decode("ascii")
 
 
+class UnsafeName(ValueError):
+    """A file name ``save`` will not write (and ``post file`` will not send), and why."""
+
+
+#: Names an agent, a shell or a tool loads as configuration, or as credentials, from the
+#: directory it runs in or from home, compared case-insensitively. Most begin with a dot, and
+#: the leading-dot rule refuses every one of those anyway; they are listed so the reason a
+#: reader sees is the specific one, and so a port of this rule carries the whole list. Every
+#: name beginning ``.git`` is refused too (``.gitconfig``, ``.gitattributes``, ``.git``).
+CONFIG_NAMES = frozenset(
+    n.casefold()
+    for n in (
+        # agent instructions and tool servers
+        "CLAUDE.md",
+        "CLAUDE.local.md",
+        "AGENTS.md",
+        "AGENT.md",
+        "GEMINI.md",
+        ".mcp.json",
+        # shells and direnv
+        ".envrc",
+        ".env",
+        ".bashrc",
+        ".bash_profile",
+        ".bash_login",
+        ".profile",
+        ".zshrc",
+        ".zshenv",
+        ".zprofile",
+        ".zlogin",
+        # credentials read by git, npm, pip and curl (``_netrc`` is the Windows spelling)
+        ".gitconfig",
+        ".npmrc",
+        ".pypirc",
+        ".netrc",
+        "_netrc",
+        # Python code that pytest and the interpreter import on their own
+        "conftest.py",
+        "sitecustomize.py",
+        "usercustomize.py",
+    )
+)
+
+#: Windows device names, reserved with or without an extension (``CON``, ``con.txt``),
+#: as Microsoft's naming rules list them (``COM0``-``COM9``, ``LPT0``-``LPT9`` and the
+#: superscript-digit ports included).
+WINDOWS_DEVICES = frozenset(
+    {"con", "prn", "aux", "nul", "conin$", "conout$"}
+    | {f"{port}{n}" for port in ("com", "lpt") for n in "0123456789\u00b9\u00b2\u00b3"}
+)
+_WINDOWS_FORBIDDEN = set('<>"|?*')
+_DRIVE = re.compile(r"^[A-Za-z]:")
+
+
 def safe_name(name: str) -> str:
     """``name`` if it is a bare file name a reader can save without leaving the directory it
-    chose, else ``ValueError``.
+    chose and without arming anything there, else :class:`UnsafeName` saying why.
+
+    Refused: a name with a directory in it, a control or invisible character, a name an agent
+    or a shell loads as configuration (:data:`CONFIG_NAMES`, and every ``.git`` name), any
+    name beginning with a dot, any ``:`` (a Windows drive, ``C:x``, or an alternate data
+    stream, ``a.txt:x``), a character Windows does not allow, a trailing dot or space (Windows
+    drops it, so ``CLAUDE.md.`` would land as ``CLAUDE.md``), and a Windows device name with
+    or without an extension (``CON``, ``nul.txt``).
 
     >>> safe_name("notes.md")
     'notes.md'
+    >>> try:
+    ...     safe_name(".envrc")
+    ... except UnsafeName as e:
+    ...     print(e)
+    '.envrc' is a name an agent or a shell loads as configuration
     """
     if (
         not name
@@ -92,10 +161,96 @@ def safe_name(name: str) -> str:
         or "/" in name
         or "\\" in name
         or any(ord(c) < 0x20 or ord(c) == 0x7F for c in name)
-        or len(name) > 255
     ):
-        raise ValueError(f"{name!r} is not a bare file name")
+        raise UnsafeName(f"{name!r} is not a bare file name")
+    if len(name) > 255:
+        raise UnsafeName(f"{name[:40]!r}… is over 255 characters")
+    hidden = [c for c in name if unicodedata.category(c) in ("Cf", "Zl", "Zp")]
+    if hidden:
+        raise UnsafeName(f"{name!r} holds an invisible character (U+{ord(hidden[0]):04X})")
+    # As a case-insensitive file system, and Windows, would compare it.
+    key = unicodedata.normalize("NFKC", name).rstrip(". ").casefold()
+    if key in CONFIG_NAMES or key.startswith(".git"):
+        raise UnsafeName(f"{name!r} is a name an agent or a shell loads as configuration")
+    if name.startswith("."):
+        raise UnsafeName(f"{name!r} begins with a dot: a hidden file, the form configuration takes")
+    if _DRIVE.match(name):
+        raise UnsafeName(f"{name!r} begins with a Windows drive ({name[:2]})")
+    if ":" in name:
+        raise UnsafeName(f"{name!r} holds ':', which Windows reads as an alternate data stream")
+    bad = sorted(set(name) & _WINDOWS_FORBIDDEN)
+    if bad:
+        raise UnsafeName(f"{name!r} holds {bad[0]!r}, which Windows does not allow in a name")
+    if name[-1] in ". ":
+        raise UnsafeName(f"{name!r} ends in a dot or a space, which Windows drops from a name")
+    if name.split(".")[0].rstrip(" ").casefold() in WINDOWS_DEVICES:
+        raise UnsafeName(f"{name!r} is a Windows device name ({name.split('.')[0]})")
     return name
+
+
+def downloads_dir(
+    home: Path | None = None,
+    platform: str | None = None,
+    registry=None,
+) -> Path | None:
+    """Where ``save`` writes when it is given no PATH: ``~/Downloads`` when it is a
+    directory, else the platform's own downloads directory (the ``XDG_DOWNLOAD_DIR`` of
+    ``~/.config/user-dirs.dirs``; on Windows, the Downloads known folder), else ``None``.
+    Never home itself: a downloads directory set to home is the XDG spelling of "none".
+
+    ``registry`` stands in for the Windows lookup (a callable answering the folder's path or
+    ``None``), so a test can take the Windows branch on any platform.
+    """
+    home = Path.home() if home is None else home
+    platform = sys.platform if platform is None else platform
+
+    def usable(candidate: Path | None) -> Path | None:
+        if candidate is None or not candidate.is_dir():
+            return None
+        try:
+            if candidate.resolve() == home.resolve():
+                return None
+        except OSError:
+            return None
+        return candidate
+
+    found = usable(home / "Downloads")
+    if found is not None:
+        return found
+    if platform == "win32":
+        lookup = _windows_downloads if registry is None else registry
+        value = lookup()
+        return usable(Path(value)) if value else None
+    try:
+        dirs = (home / ".config" / "user-dirs.dirs").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    for line in dirs.splitlines():
+        m = re.match(r'^\s*XDG_DOWNLOAD_DIR\s*=\s*"([^"]*)"\s*$', line)
+        if m is None:
+            continue
+        value = m.group(1)
+        if value.startswith("$HOME/"):
+            return usable(home / value[len("$HOME/") :])
+        if value.startswith("/"):
+            return usable(Path(value))
+        return None
+    return None
+
+
+def _windows_downloads() -> str | None:
+    """The Downloads known folder, from the user's shell folders in the registry."""
+    try:
+        import winreg  # type: ignore[import-not-found]
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+        ) as key:
+            value, _ = winreg.QueryValueEx(key, "{374DE290-123F-4565-9164-39C4925E467B}")
+    except (ImportError, OSError):
+        return None
+    return os.path.expandvars(value) if isinstance(value, str) else None
 
 
 def media_type(path: Path, encoding: str) -> str:

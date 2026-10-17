@@ -200,11 +200,36 @@ name, size, media type and digest, **never its content**:
 so neither a terminal nor an agent's context fills with base64.
 
 **Saving a file.** `ikigai-layers save ENTRY [PATH]` writes the file's bytes to `PATH` (a
-directory: the file's own name in it; no `PATH`: its own name here), after checking its size and
-its SHA-256 against what the entry says. The door checks that an entry is well formed, never
-that its digest is true, so this check is the one that matters: when either does not match,
-nothing is written and it exits 1. It will not replace an existing file without `--force`, and
-it refuses a name with a directory in it, so a file can only land where you pointed it.
+directory: the file's own name in it; no `PATH`: your downloads directory), after checking its
+size and its SHA-256 against what the entry says. The door checks that an entry is well formed,
+never that its digest is true, so this check is the one that matters: when either does not
+match, nothing is written and it exits 1. It will not replace an existing file without
+`--force` (which replaces it, and its old content is lost), and it refuses a name with a
+directory in it, so a file can only land where you pointed it.
+
+**Where it lands, and which names it refuses.** A file's name is whatever its poster chose, so
+`save` will not write one that would do something on your machine just by being there:
+
+- a name an agent or a shell loads as configuration, in any case: `CLAUDE.md`,
+  `CLAUDE.local.md`, `AGENTS.md`, `AGENT.md`, `GEMINI.md`, `.mcp.json`, `.envrc`, `.env`,
+  `.bashrc`, `.bash_profile`, `.bash_login`, `.profile`, `.zshrc`, `.zshenv`, `.zprofile`,
+  `.zlogin`, `.gitconfig`, `.npmrc`, `.pypirc`, `.netrc`, `_netrc`, `conftest.py`,
+  `sitecustomize.py`, `usercustomize.py`, and every name beginning `.git`;
+- any name beginning with a dot, the form most configuration takes;
+- any `:`, which is a drive on Windows (`C:x`) or an alternate data stream (`a.txt:x`), and
+  the characters Windows does not allow in a name (`< > " | ? *`);
+- a trailing dot or space, which Windows drops, so `CLAUDE.md.` would land as `CLAUDE.md`;
+- a Windows device name, with or without an extension: `CON`, `PRN`, `AUX`, `NUL`,
+  `COM0`-`COM9`, `LPT0`-`LPT9` (and their superscript-digit forms), `CONIN$`, `CONOUT$`;
+- an invisible character (a zero-width space or joiner, a byte-order mark).
+
+Each refusal says why. To keep the file anyway, save it under a name of your own with
+`--as NAME` (`save ENTRY --as mcp.json`), or give a `PATH` that names the file; the same rules
+apply to that name. With no `PATH` it writes to `~/Downloads` (or, without one, the downloads
+directory your platform names: `XDG_DOWNLOAD_DIR` on Linux, the Downloads folder on Windows),
+never to the directory you are in, which is often a repository an agent works in; when there is
+no downloads directory it asks for a `PATH`. `post file` refuses the same names, since a reader
+could not save them: post it under another with `--file-name NAME`.
 
 **Following them.** `follow` reads each new entry once and adds what it is to the door's line,
 so your Claude's Monitor shows the kind and the title, never a file's content:
@@ -230,7 +255,7 @@ Every command but `cert generate` reaches the door with one actor's set: `--name
 | `post brief LAYER [FILE\|-]` | post an `ik:Brief`: `--title` (default: the first `# ` heading), `--repo owner/name` |
 | `post issue LAYER [FILE\|-]` | post an `ik:Issue`: `--title`, `--repo`, `--severity critical\|major\|minor\|info` |
 | `post file LAYER PATH` | post an `ik:File` (text or base64; digest and size); refused here when over the layer's bound |
-| `save ENTRY [PATH]` | write a file entry's bytes to disk after checking its size and digest; `--force` to replace |
+| `save ENTRY [PATH]` | write a file entry's bytes to disk (default: your downloads directory) after checking its size and digest; `--as NAME` to save under another name; `--force` to replace an existing file |
 | `read LAYER [--after N] [--kind K,…]` | the entries after sequence number N, every page: a header line each, then what its kind shows |
 | `follow [--layers L,…] [--from-now] [--kind K,…]` | one line per event, for a Monitor, with each entry's kind and title (`--plain` without; `--once`, `--reset LAYER`, `--state FILE`, `--wait S`) |
 | `tuples LAYER [--taken]` | a task layer's pending tuples (`seq created subject dropper`), or the receipts of takes |
@@ -258,6 +283,7 @@ else.
 | --- | --- | --- |
 | 1 | the door's own error: `denied: capability does not grant urn:cap:layer:read:tasks …`, `conflict: … already taken by …`, `does not conform to layer …'s shapes …` | the door answered; read it |
 | 1 | `not saved: … hashes to …, and it says …` | the file entry does not match its own digest or size; nothing was written |
+| 1 | `not saved: '.mcp.json' is a name an agent or a shell loads as configuration; save it under another name with --as NAME` | the entry's file name is one `save` refuses; nothing was written |
 | 2 | a usage problem, or a file in your set: `…/server.crt is missing: it should hold the door's certificate` | fix the named file or argument |
 | 4 | `refused: the server … is not the pinned door` | your `server.crt` is not this door's; get the right one |
 | 4 | `refused: the door … refused this client certificate … not in the door's trust list` | the operator has not installed your `client.crt` yet |
