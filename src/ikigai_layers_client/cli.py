@@ -6,7 +6,7 @@
     ikigai-layers post brief LAYER [FILE|-]      post a brief (Markdown; --title, --repo)
     ikigai-layers post issue LAYER [FILE|-]      post an issue (--title, --repo, --severity)
     ikigai-layers post file LAYER PATH           attach a file (text or base64, digest checked)
-    ikigai-layers save ENTRY [PATH]              write a file entry back to disk, digest checked
+    ikigai-layers save ENTRY [PATH]              write a file entry to disk (default ~/Downloads)
     ikigai-layers read LAYER [--after N]         the entries after a sequence number (--kind)
     ikigai-layers follow [--layers L,…]          one line per event, for a Monitor (--kind)
     ikigai-layers tuples LAYER [--taken]         a tuplespace's pending tuples (or receipts)
@@ -146,12 +146,29 @@ def _parser() -> argparse.ArgumentParser:
         parents=[connection],
         help="write a file entry back to disk",
         description="Write a file entry's bytes to PATH (a directory: the file's own name in "
-        "it; default: the file's own name here), after checking its size and SHA-256. Nothing "
-        "is written when either does not match.",
+        "it; no PATH: your downloads directory, ~/Downloads), after checking its size and "
+        "SHA-256. Nothing is written when either does not match. A name an agent or a shell "
+        "loads as configuration (CLAUDE.md, AGENTS.md, .mcp.json, .envrc, any .git name), any "
+        "name beginning with a dot, any ':', and a Windows device name (CON, NUL, COM1) are "
+        "refused: save it under another name with --as NAME.",
     )
     save.add_argument("entry", help="the file entry's IRI (urn:layer:LAYER:entry:ID)")
-    save.add_argument("path", nargs="?", help="where to write it")
-    save.add_argument("--force", action="store_true", help="replace an existing file")
+    save.add_argument(
+        "path",
+        nargs="?",
+        help="a directory to save into, or the file to write (default: your downloads directory)",
+    )
+    save.add_argument(
+        "--as",
+        dest="as_name",
+        metavar="NAME",
+        help="save under NAME instead of the entry's own file name (the same rules apply)",
+    )
+    save.add_argument(
+        "--force",
+        action="store_true",
+        help="replace an existing file at the target; its old content is lost",
+    )
 
     kind_help = f"only these kinds, comma-separated ({', '.join(message.KINDS)})"
     read = commands.add_parser("read", parents=[connection], help="read a layer's entries")
@@ -336,13 +353,18 @@ def _file_post(args) -> tuple[str, int, str, str, str]:
     except OSError as e:
         raise Usage(f"cannot read {path}: {e}") from e
     name = args.file_name or path.name
-    turtle, encoding, content = files.file_entry(
-        name,
-        data,
-        media=args.media_type,
-        in_reply_to=args.in_reply_to,
-        supersedes=args.supersedes,
-    )
+    try:
+        turtle, encoding, content = files.file_entry(
+            name,
+            data,
+            media=args.media_type,
+            in_reply_to=args.in_reply_to,
+            supersedes=args.supersedes,
+        )
+    except files.UnsafeName as e:
+        raise Usage(
+            f"{e}, and a reader cannot save it: post it under another name with --file-name NAME"
+        ) from e
     return name, len(data), turtle, encoding, content
 
 
@@ -367,11 +389,37 @@ def _entry_layer(entry: str) -> str:
     return match.group(1)
 
 
-def _target(name: str, path: str | None) -> Path:
-    if path is None:
-        return Path.cwd() / name
-    target = Path(path).expanduser()
-    return target / name if target.is_dir() else target
+_ANOTHER_NAME = "save it under another name with --as NAME"
+
+
+def _save_dir(args) -> Path | None:
+    """The directory ``save`` writes into when PATH names one or is left out; ``None`` when
+    PATH names the file itself. Checked before dialing, with ``--as`` and PATH's own name."""
+    if args.path is None:
+        found = files.downloads_dir()
+        if found is None:
+            raise Usage(
+                f"no downloads directory found (no {Path.home() / 'Downloads'}): give a PATH "
+                "to save into"
+            )
+        return found
+    path = Path(args.path).expanduser()
+    if path.is_dir():
+        return path
+    if args.as_name is not None:
+        raise Usage(
+            f"{path} is not a directory: give --as NAME with a directory, or a PATH that "
+            "names the file"
+        )
+    try:
+        files.safe_name(path.name)
+    except files.UnsafeName as e:
+        raise Usage(f"not saved: {e}; give PATH another name") from e
+    return None
+
+
+def _target(name: str, path: str | None, directory: Path | None) -> Path:
+    return directory / name if directory is not None else Path(path).expanduser()
 
 
 def cmd_save(d: door.Door, args) -> int:
@@ -384,15 +432,25 @@ def cmd_save(d: door.Door, args) -> int:
     node = nodes[0]
     if show.kind(node) != "File":
         raise Usage(f"{args.entry} is a {show.kind(node) or 'entry'}, not a file")
+    # The entry's own name matters only when it picks the file: not with --as, and not when
+    # PATH names the file (both were checked before dialing).
+    name = args.as_name if args.save_dir is not None else Path(args.path).expanduser().name
     try:
-        name = files.safe_name(str(files.one(node.get("fileName"))))
+        if name is None:
+            name = files.safe_name(str(files.one(node.get("fileName"))))
         data = files.decode(node)
+    except files.UnsafeName as e:
+        _err(f"not saved: {e}; {_ANOTHER_NAME}")
+        return EXIT_DOOR_ERROR
     except (ValueError, files.IntegrityError) as e:
         _err(f"not saved: {e}")
         return EXIT_DOOR_ERROR
-    target = _target(name, args.path)
+    target = _target(name, args.path, args.save_dir)
     if target.exists() and not args.force:
-        raise Usage(f"{target} exists: give another PATH, or --force to replace it")
+        raise Usage(
+            f"{target} exists: give another PATH, --as NAME, or --force to replace it "
+            "(its old content is lost)"
+        )
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".ikigai-layers-", dir=target.parent)
     try:
@@ -558,6 +616,12 @@ def main(argv: list[str] | None = None) -> int:
             door.layer_name(args.layer)
         if args.command == "save":
             _entry_layer(args.entry)
+            if args.as_name is not None:
+                try:
+                    files.safe_name(args.as_name)
+                except files.UnsafeName as e:
+                    raise Usage(f"not saved: {e}; choose another --as NAME") from e
+            args.save_dir = _save_dir(args)
         if args.command == "post" and args.post_kind == "file":
             args.prepared = _file_post(args)
         elif args.command == "post":
