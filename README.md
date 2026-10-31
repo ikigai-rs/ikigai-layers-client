@@ -323,6 +323,13 @@ CI's `interop` job builds ikigai-cli with its `quic` feature and runs it with
 `--require-interop`, where a missing binary fails instead. No test connects anywhere but
 loopback.
 
+## Accessibility
+
+[ACCESSIBILITY.md](https://github.com/ikigai-rs/ikigai-layers-client/blob/main/ACCESSIBILITY.md)
+says what the `ikigai-layers` command prints that people read (answers, entries, `follow`'s
+event lines, refusals), the rules that text follows, what is tested, the known limitations, and
+how to report a barrier.
+
 ## License
 
 Licensed under either of MIT or Apache-2.0, at your option.
