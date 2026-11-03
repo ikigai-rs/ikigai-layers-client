@@ -1,0 +1,38 @@
+# What may be dropped in `offers`: an Offer, and the reports on one. CLOSED, plus the host's stamps.
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix ik: <https://ikigai-rs.dev/ns#> .
+
+<urn:layers:shape:offer> a sh:NodeShape ;
+  sh:targetClass ik:Offer ;
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  sh:property
+    [ sh:path dcterms:title ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ] ,
+    [ sh:path ik:brief ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ] ,
+    [ sh:path ik:repository ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ,
+    [ sh:path prov:wasAttributedTo ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ,
+    [ sh:path dcterms:created ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ,
+    [ sh:path ik:seq ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:integer ] .
+
+<urn:layers:shape:report> a sh:NodeShape ;
+  sh:targetClass ik:Progress , ik:Release , ik:Handback ;
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  sh:property
+    [ sh:path ik:offer ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ,
+    [ sh:path ik:addressedTo ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ,
+    [ sh:path ik:note ; sh:maxCount 1 ; sh:datatype xsd:string ] ,
+    [ sh:path ik:evidence ; sh:nodeKind sh:IRI ] ,
+    [ sh:path prov:wasAttributedTo ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ,
+    [ sh:path dcterms:created ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] ,
+    [ sh:path ik:seq ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:integer ] .
+
+<urn:layers:shape:handback> a sh:NodeShape ;
+  sh:targetClass ik:Handback ;
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ik:offer ik:addressedTo ik:note prov:wasAttributedTo dcterms:created ik:seq ) ;
+  sh:property [ sh:path ik:evidence ; sh:minCount 1 ; sh:nodeKind sh:IRI ] .

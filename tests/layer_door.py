@@ -41,6 +41,10 @@ GRANTS = {
         "urn:cap:layer:feed:work",
         "urn:cap:layer:read:work",
         "urn:cap:layer:say:work",
+        "urn:cap:layer:feed:offers",
+        "urn:cap:layer:out:offers",
+        "urn:cap:layer:read:offers",
+        "urn:cap:layer:take:offers",
     ],
     "alice-agent": [
         "urn:cap:collab:read:demo",
@@ -50,6 +54,10 @@ GRANTS = {
         "urn:cap:layer:feed:work",
         "urn:cap:layer:read:work",
         "urn:cap:layer:say:work",
+        "urn:cap:layer:feed:offers",
+        "urn:cap:layer:out:offers",
+        "urn:cap:layer:read:offers",
+        "urn:cap:layer:take:offers",
     ],
 }
 

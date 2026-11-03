@@ -2,8 +2,8 @@
 
 **Take part in an ikigai layer with nothing but Python.** One command, `ikigai-layers`, makes
 your certificate, asks the door who you are, says and reads messages, posts briefs, issues and
-files, follows a layer as it happens, and offers and takes work in a task layer. No Rust
-toolchain, no build.
+files, follows a layer as it happens, offers and takes work in a task layer, and runs your agent
+on the offers routed to it. No Rust toolchain, no build.
 
 A *layer* is a shared space between people, their agents and their machines, hosted by an
 ikigai door: who said what is stamped by the host, what may be said is a closed shape, and who
@@ -66,8 +66,9 @@ ikigai-layers tuples tasks --name mini
 ikigai-layers take tasks urn:layer:tasks:tuple:EXAMPLE --name mini
 ```
 
-The commands offer and take task tuples; running an agent loop remains the collaborator's
-choice. For doors without a lobby, use the manual certificate exchange below.
+These commands offer and take task tuples by hand; [`work`](#running-an-agent-on-offers-routed-to-it)
+runs an agent on them for you. For doors without a lobby, use the manual certificate exchange
+below.
 
 ## Getting started (macOS, or Ubuntu on WSL2; Python 3.11 or newer)
 
@@ -291,6 +292,101 @@ talk-x 15 2026-10-15T18:04:40.010Z say urn:layer:talk-x:entry:01m5… urn:collab
 `follow --kind brief,issue` notifies only for those kinds (the cursor still moves past the
 rest); `follow --plain` prints the door's six fields alone and reads no entry.
 
+## Running an agent on offers routed to it
+
+`ikigai-layers work run` is the loop for a collaborator without gonk: it follows a task layer,
+takes an offer routed to this agent, runs Claude Code, Codex or Hermes in a fresh worktree of the
+repository the offer names, and posts a report back to the offerer with the pull request and its
+CI state. It follows `tools/worker.py` from
+[ikigai-gonk-starter](https://github.com/ikigai-rs/ikigai-gonk-starter), with the layer in the
+ledger's place. It needs macOS, Linux or WSL2, `git`, and `gh` signed in as the agent's account.
+
+Enroll the agent with `onboard` (or the manual exchange above), then write `worker.toml` in its
+cert set:
+
+```toml
+layer   = "tasks"
+actor   = "urn:collab:participant:yourname-agent"  # who the door must say this certificate is
+routers = ["urn:collab:participant:yourname"]      # whose offers this agent may run
+orgs    = ["ikigai-rs"]                            # or [repos."owner/name"] for one repository
+# exclude = ["ikigai-rs/not-this-one"]
+# labels = ["agent:claude"]   # only offers carrying all of these
+# kinds  = ["bug"]            # only offers of one of these kinds
+# budget = "2h"               # the agent's wall-clock; also check_every, grace, ci_wait, ci_poll
+# work_root = "~/work"        # must be under this account's home
+# keep = false                # keep the worktree after a hand-back
+
+[agent]
+preset = "claude"             # or codex, hermes; or command = ["my-agent", "{prompt_file}"]
+```
+
+```sh
+ikigai-layers work plan --name yourname-agent        # what it would take, and why not the rest
+ikigai-layers work run --once --name yourname-agent  # at most one offer, then exit
+ikigai-layers work run --name yourname-agent         # follow the layer until stopped
+```
+
+An unattended agent also needs its own permission settings (Claude Code's allowlist or permission
+mode, Codex's sandbox and approval policy); this command does not choose them for you. Stopping it
+(SIGTERM or Ctrl-C) stops the agent and releases the offer. A command's placeholders are
+`{prompt}`, `{prompt_file}`, `{workdir}`, `{branch}`, `{offer}`, `{repo}`, `{report_file}` and
+`{profile}`.
+
+**Which offers it takes.** All of these, checked before the take and again on the tuple as taken:
+
+- `routers` names who dropped it. The door stamps that, so nobody else's offer reaches your agent.
+  It is required, and it is the only routing an offer from gonk's mirror has so far: those offers
+  are closed to a title, a brief and a repository.
+- `labels` and `kinds`, when you set them, must match the offer's `label`, `labels` and `kind`
+  terms. An offer that carries none does not match, so set them only for a layer whose shapes and
+  context admit those terms.
+- An offer with `addressedTo` must name this actor.
+- It names one `https://github.com/owner/name` repository that `orgs` or `[repos]` admit, and `gh`
+  says that repository is public, not archived, still under that name, and that this account may
+  push to it.
+
+`work plan` lists every pending offer and the reason for each skip. `run` says a skip once, naming
+subjects and reasons only: an offer's title and brief go to the agent, never to this output.
+
+**What comes back.** Addressed to the offerer, named from what it says, so sending one twice is one
+record:
+
+| report | when | carries |
+| --- | --- | --- |
+| `ik:Progress` | when the agent starts, then once a day | a note that an agent is working |
+| `ik:Handback` | a pull request, or an accepted URL on the report file's first line | `ik:evidence` and a note with each pull request's CI state |
+| `ik:Release` | no evidence, budget spent, stopped, or no worktree | a note saying why; any worktree is kept |
+
+Evidence is what the controller accepts, a pull request URL or a commit URL in the offered
+repository. A note is at most 2,000 characters and names no local path, but it can quote what the
+agent wrote in its report file. The controller treats all of this as data: it checks the evidence
+and decides what to do. A report the door did not answer is kept in `NAME.work/offers.json` beside
+the cert set and sent again, and a loop that restarts releases an offer it was still holding.
+
+**The boundaries.**
+
+- **No merge, no publish.** The command runs neither, and the agent's brief forbids both. The
+  agent's environment loses publishing tokens (`CARGO_REGISTRY_TOKEN`, `TWINE_*`, `NPM_TOKEN` and
+  the like), and a merge made before it exited is called out in the report. This is not enforcement
+  against a determined agent: a credential file in the account's home stays readable, and only
+  branch protection can stop a merge. Give the account nothing it should not use.
+- **As the agent's account.** Run it under a Unix account of its own. It refuses root, a
+  `client.key` that another account owns or others can read, a work root outside this home, and a
+  certificate the door says is not `actor`.
+- **Never above the agent's grant.** The door enforces the grant, and this command holds one
+  certificate. A denial stops the loop with the door's words. While the agent runs, a fresh
+  connection reads the take's receipt every `check_every`; a refusal stops the agent and keeps its
+  work, and an outage does not. The agent's own process can read the certificate, so that
+  certificate's grant is the limit: never point `work` at your own set.
+
+What it does not carry over from `tools/worker.py`: the disk floor, the pruning of kept worktrees,
+the usage hold, pools and status items. One agent per repository holds on this machine only; the
+layer has no shared claim on a repository to read.
+
+`work run --once` exits **0** when handed back with evidence, **3** with nothing to take, and **6**
+when the offer was taken and not handed back (released, or its report is still owed). Otherwise the
+codes below hold.
+
 ## Commands
 
 Commands other than `cert generate` and `onboard` reach the door with one actor's set: `--name NAME` for
@@ -313,6 +409,7 @@ the enrolled set's saved door, otherwise
 | `tuples LAYER [--taken]` | a task layer's pending tuples (`seq created subject dropper`), or the receipts of takes |
 | `out LAYER [FILE\|-]` | drop one tuple (Turtle or JSON-LD, its subject under the layer's IRI); prints the subject |
 | `take LAYER SUBJECT` | take one tuple, atomically; a second taker is told who won |
+| `work run\|plan` | take offers routed to this agent, run it, and report back ([above](#running-an-agent-on-offers-routed-to-it)); `--once`, `--config FILE` (default `worker.toml` in the set) |
 
 What `say` sends is the `ik:Message` the door's runbook shows:
 
@@ -338,6 +435,10 @@ else.
 | 1 | `not saved: '.mcp.json' is a name an agent or a shell loads as configuration; save it under another name with --as NAME` | the entry's file name is one `save` refuses; nothing was written |
 | 1 | `denied: current entitlement grants no layer capabilities …` | ask the controller about revocation or a layer membership invite |
 | 3 | `not enrolled yet: …` (`onboard`) | await controller approval, then rerun the same command to resume |
+| 3 | `nothing to take` (`work run --once`) | nothing is routed here now; `work plan` says why |
+| 6 | `released …`, `report owed …` (`work run --once`) | the offer was taken and not handed back; the lines before it say why |
+| 4 | `refused: the door says this certificate is … and the configuration's actor is …` (`work`) | use the agent's own set, or correct `actor` |
+| 4 | `refused: … is readable by others`, `refused: the loop does not run as root` (`work`) | fix the key's mode, or run as the agent's account |
 | 2 | a usage problem, or a file in your set: `…/server.crt is missing: it should hold the door's certificate` | fix the named file or argument |
 | 4 | `refused: … does not match --pin: nothing was sent` | get the door certificate and fingerprint from the operator again |
 | 4 | `refused: the server … is not the pinned door` | your `server.crt` is not this door's; get the right one |
@@ -370,12 +471,16 @@ just gates          # or scripts/gates.sh: ruff check, ruff format --check, pyte
 started on loopback
 (`ikigai serve quic://127.0.0.1:0` with a scratch `layers/` config home, scratch certificates and
 an enrollment written for them); they need the `ikigai` binary on `PATH` and skip without it.
+`tests/test_agent_loop.py` runs `work` with a fake layer, a fake `gh` and a fake agent, over real
+git; `tests/test_interop.py` also runs it against the real door, whose `offers` fixture
+has the offer and report shapes of ikigai-layers' own tests.
 `test_work.py` posts every kind to a layer whose shapes and context
 (`tests/fixtures/layers/layers/work.*`) are a copy of an edge layer's that takes briefs, issues
 and files, with only the layer's name changed, so the door admits and refuses exactly as it does
 for a collaborator.
 CI's `interop` job builds ikigai-cli with its `quic` feature and runs it with
-`--require-interop`, where a missing binary fails instead. `tests/test_onboard.py` uses an in-process fake lobby, real Python-generated certificates,
+`--require-interop`, where a missing binary fails instead (a newer `ikigai` needs a `--layers-key`
+that `tests/layer_door.py` does not pass yet, so those tests fail locally against it; use 0.1.62). `tests/test_onboard.py` uses an in-process fake lobby, real Python-generated certificates,
 and the starter's shared proof/request fixture. CI runs the full gates on Linux. The enrollment implementation avoids subprocess and symlink
 requirements for Windows and WSL2; native Windows execution has not been tested. No test connects anywhere but loopback.
 
