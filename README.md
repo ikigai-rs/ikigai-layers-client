@@ -11,13 +11,63 @@ may do what is a grant the door's operator gives each participant
 ([ikigai-layers](https://github.com/ikigai-rs/ikigai-layers) has the whole story). This client
 reaches a door over QUIC with **pinned certificates**: it talks only to the one door whose
 certificate you hold, and **the door talks only to a certificate its operator has enrolled**.
-Until yours is enrolled, every command but `cert generate` is refused, and the refusal says so.
+A door with the enrollment lobby enabled also accepts `onboard` before enrollment.
 
 It is built on the QUIC transport of
 [ikigai-python](https://github.com/ikigai-rs/ikigai-python) (`ikigai[quic]`). ikigai-python is
 not on PyPI yet, so this package depends on it as a **git dependency pinned to the commit that
 merged that transport** (see `pyproject.toml`). Neither package is on PyPI; both install
 from GitHub.
+
+## Enroll with an invite (including Windows and WSL2)
+
+With Python 3.11+ and Git installed, install the client in a virtual environment as below.
+On native Windows, use `py -3 -m venv .venv`, activate with
+`.venv\Scripts\Activate.ps1` in PowerShell, then
+`python -m pip install 'git+https://github.com/ikigai-rs/ikigai-layers-client'`.
+
+If your operator provided an invite for a door with the lobby enabled, enroll with one command
+(the example fits PowerShell, macOS and WSL2 shells; replace the example values):
+
+```sh
+ikigai-layers onboard --name mini --door quic://door.example.org:4434 --server-cert server.crt --pin SHA256 --invite INVITE_ID --code PAIRING_CODE
+```
+
+The door's certificate must match the SHA-256 fingerprint your operator supplied. Colons and
+uppercase hex are accepted. The client generates its certificate and private key locally using
+Python's existing dependencies, posts an `onb:EnrollmentRequest` with the starter's exact request
+format and HMAC-SHA256 proof, and polls for controller approval. No gonk, starter, Rust, openssl
+command, or symlink permission is required. The key stays in the identity directory; the pairing
+code is never saved or printed by the client.
+
+The default directory is `~/.ikigai/layers-client/mini` (`~` is your user home on Windows too).
+It contains `client.crt`, `client.key`, the pinned `server.crt`, `onboard.json` recording the
+posted request, and, after approval, `config.toml` with the door URL. Files are created with mode
+0600 and a new identity directory with 0700 on POSIX; Windows uses the directory's inherited
+access controls. Keep it in your private user profile. Use `--cert-dir DIR` instead of `--name`
+for another directory. An existing matching client pair is reused, including with `--force`.
+
+`--once` posts if needed and checks approval once, exiting **3** while pending. Otherwise polling
+backs off from 5 seconds to 300 seconds, for up to `--max-wait SECONDS` (default 86400). Rerun the
+same command to resume without reposting; `--server-cert` may be omitted once the pinned file is
+present. A different invite or door posts a new request. A differing server certificate or
+configuration is kept unless you give `--force`. Pin validation still applies with `--force`.
+
+Approval requires a current entitlement for this certificate with `onb:layerGrant` capability
+IRIs such as `urn:cap:layer:take:tasks`. The client reads every page of grants, honors
+`ik:supersedes`, ignores expired entitlements, and refuses a current revocation or an entitlement
+that grants only gonk access. The door continues to enforce every capability.
+
+After approval, normal commands use the saved door (`--door` overrides it):
+
+```sh
+ikigai-layers me --name mini
+ikigai-layers tuples tasks --name mini
+ikigai-layers take tasks urn:layer:tasks:tuple:EXAMPLE --name mini
+```
+
+The commands offer and take task tuples; running an agent loop remains the collaborator's
+choice. For doors without a lobby, use the manual certificate exchange below.
 
 ## Getting started (macOS, or Ubuntu on WSL2; Python 3.11 or newer)
 
@@ -243,13 +293,15 @@ rest); `follow --plain` prints the door's six fields alone and reads no entry.
 
 ## Commands
 
-Every command but `cert generate` reaches the door with one actor's set: `--name NAME` for
+Commands other than `cert generate` and `onboard` reach the door with one actor's set: `--name NAME` for
 `~/.ikigai/layers-client/NAME`, or `--cert-dir DIR`. `--door` defaults to
+the enrolled set's saved door, otherwise
 `quic://ikigai-rs.dev:4434`. `--json` prints the door's JSON answer as it came.
 
 | command | what it does |
 | --- | --- |
 | `cert generate --name NAME` (or `--dir DIR`) | write `client.crt` and `client.key` and print the fingerprint; refuses to overwrite without `--force` |
+| `onboard --door URL --pin SHA256 --invite ID --code CODE` | generate an identity, pin the lobby, request enrollment, poll approval, and save config; `--server-cert FILE`, `--name NAME`, `--once` |
 | `me` | who the door says this actor is (`urn:layers:me`) |
 | `say LAYER [TEXT\|-]` | say one `ik:Message` (stdin with `-` or no TEXT; a trailing newline is dropped); `--question` asks it; `--in-reply-to ENTRY`, `--supersedes ENTRY` |
 | `post brief LAYER [FILE\|-]` | post an `ik:Brief`: `--title` (default: the first `# ` heading), `--repo owner/name` |
@@ -284,7 +336,10 @@ else.
 | 1 | the door's own error: `denied: capability does not grant urn:cap:layer:read:tasks …`, `conflict: … already taken by …`, `does not conform to layer …'s shapes …` | the door answered; read it |
 | 1 | `not saved: … hashes to …, and it says …` | the file entry does not match its own digest or size; nothing was written |
 | 1 | `not saved: '.mcp.json' is a name an agent or a shell loads as configuration; save it under another name with --as NAME` | the entry's file name is one `save` refuses; nothing was written |
+| 1 | `denied: current entitlement grants no layer capabilities …` | ask the controller about revocation or a layer membership invite |
+| 3 | `not enrolled yet: …` (`onboard`) | await controller approval, then rerun the same command to resume |
 | 2 | a usage problem, or a file in your set: `…/server.crt is missing: it should hold the door's certificate` | fix the named file or argument |
+| 4 | `refused: … does not match --pin: nothing was sent` | get the door certificate and fingerprint from the operator again |
 | 4 | `refused: the server … is not the pinned door` | your `server.crt` is not this door's; get the right one |
 | 4 | `refused: the door … refused this client certificate … not in the door's trust list` | the operator has not installed your `client.crt` yet |
 | 4 | `refused: the door … trusts this certificate but has not enrolled it … fingerprint …` | the operator has not enrolled that fingerprint yet |
@@ -320,8 +375,9 @@ an enrollment written for them); they need the `ikigai` binary on `PATH` and ski
 and files, with only the layer's name changed, so the door admits and refuses exactly as it does
 for a collaborator.
 CI's `interop` job builds ikigai-cli with its `quic` feature and runs it with
-`--require-interop`, where a missing binary fails instead. No test connects anywhere but
-loopback.
+`--require-interop`, where a missing binary fails instead. `tests/test_onboard.py` uses an in-process fake lobby, real Python-generated certificates,
+and the starter's shared proof/request fixture. CI runs the full gates on Linux. The enrollment implementation avoids subprocess and symlink
+requirements for Windows and WSL2; native Windows execution has not been tested. No test connects anywhere but loopback.
 
 ## Accessibility
 

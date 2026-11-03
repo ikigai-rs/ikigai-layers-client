@@ -1,6 +1,7 @@
 """The ``ikigai-layers`` command: talk to a layer door with nothing but Python.
 
     ikigai-layers cert generate --dir DIR        one actor's client identity (no server key)
+    ikigai-layers onboard --door URL --pin SHA256 --invite ID --code CODE
     ikigai-layers me                             who the door says this actor is
     ikigai-layers say LAYER [TEXT|-]             say one message (stdin with - or no TEXT)
     ikigai-layers post brief LAYER [FILE|-]      post a brief (Markdown; --title, --repo)
@@ -13,12 +14,14 @@
     ikigai-layers out LAYER [FILE|-]             drop one tuple (Turtle or JSON-LD)
     ikigai-layers take LAYER SUBJECT             take one tuple, atomically
 
-Every command but ``cert generate`` reaches the door (``--door``, default
+``onboard`` enrolls through a lobby and saves its door in the cert set. Other commands
+but ``cert generate`` reach the door (``--door``, otherwise the saved door or
 ``quic://ikigai-rs.dev:4434``) with one actor's cert set: ``--cert-dir DIR``, or ``--name
 NAME`` for ``~/.ikigai/layers-client/NAME``. Exit codes: 0 done; 1 the door answered with an
 error (named); 2 usage, or a problem on this side (named); 4 the door refused this
 certificate, or no common wire version; 5 the door could not be reached. ``follow`` adds 3
-(a stale cursor) and keeps its own meanings for 4 and 5 (see ``follow --help``).
+(a stale cursor); ``onboard`` uses 3 while awaiting approval. ``follow`` keeps its own
+meanings for 4 and 5 (see ``follow --help``).
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ from pathlib import Path
 import ikigai
 from ikigai import quic
 
-from . import __version__, certs, door, files, follow, message, show
+from . import __version__, certs, door, files, follow, message, onboard, show
 
 EXIT_DOOR_ERROR = 1
 EXIT_USAGE = 2
@@ -67,7 +70,7 @@ def _err(text: str) -> None:
 def _parser() -> argparse.ArgumentParser:
     connection = argparse.ArgumentParser(add_help=False)
     connection.add_argument(
-        "--door", default=door.DOOR, help=f"the layer door (default {door.DOOR})"
+        "--door", help=f"the layer door (default: saved config, otherwise {door.DOOR})"
     )
     who = connection.add_mutually_exclusive_group()
     who.add_argument("--name", help="the actor whose cert set to use: ~/.ikigai/layers-client/NAME")
@@ -80,10 +83,12 @@ def _parser() -> argparse.ArgumentParser:
         prog="ikigai-layers",
         description="Talk to an ikigai layer door over QUIC, with pinned certificates.",
         epilog="Exit codes: 0 done, 1 the door answered an error, 2 usage or local, "
-        "4 refused, 5 unreachable.",
+        "3 awaiting approval (onboard), 4 refused, 5 unreachable.",
     )
     top.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = top.add_subparsers(dest="command", required=True, metavar="COMMAND")
+
+    onboard.add_parser(commands)
 
     cert = commands.add_parser("cert", help="certificates")
     cert_commands = cert.add_subparsers(dest="cert_command", required=True, metavar="SUBCOMMAND")
@@ -610,7 +615,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "cert":
             return cmd_cert_generate(args)
+        if args.command == "onboard":
+            return onboard.run(args, _out)
         cert_dir = _cert_dir(args)
+        args.door = args.door or onboard.configured_door(cert_dir)
         # A bad name, entry, file or option is refused before anything is dialed.
         if getattr(args, "layer", None) is not None:
             door.layer_name(args.layer)
@@ -635,7 +643,7 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_follow(args, cert_dir)
         with door.connect(args.door, cert_dir) as d:
             return COMMANDS[args.command](d, args)
-    except (Usage, ValueError) as e:
+    except (Usage, ValueError, OSError) as e:
         _err(str(e))
         return EXIT_USAGE
     except quic.CertSetError as e:
