@@ -13,6 +13,7 @@
     ikigai-layers tuples LAYER [--taken]         a tuplespace's pending tuples (or receipts)
     ikigai-layers out LAYER [FILE|-]             drop one tuple (Turtle or JSON-LD)
     ikigai-layers take LAYER SUBJECT             take one tuple, atomically
+    ikigai-layers work run|plan                  run an agent on offers routed to it (worker.toml)
 
 ``onboard`` enrolls through a lobby and saves its door in the cert set. Other commands
 but ``cert generate`` reach the door (``--door``, otherwise the saved door or
@@ -20,8 +21,9 @@ but ``cert generate`` reach the door (``--door``, otherwise the saved door or
 NAME`` for ``~/.ikigai/layers-client/NAME``. Exit codes: 0 done; 1 the door answered with an
 error (named); 2 usage, or a problem on this side (named); 4 the door refused this
 certificate, or no common wire version; 5 the door could not be reached. ``follow`` adds 3
-(a stale cursor); ``onboard`` uses 3 while awaiting approval. ``follow`` keeps its own
-meanings for 4 and 5 (see ``follow --help``).
+(a stale cursor); ``onboard`` uses 3 while awaiting approval; ``work run --once`` uses 3 for
+nothing to take and 6 for an offer taken and not handed back. ``follow`` keeps its own meanings
+for 4 and 5 (see ``follow --help``).
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ from pathlib import Path
 import ikigai
 from ikigai import quic
 
-from . import __version__, certs, door, files, follow, message, onboard, show
+from . import __version__, certs, door, files, follow, message, onboard, show, work
 
 EXIT_DOOR_ERROR = 1
 EXIT_USAGE = 2
@@ -83,12 +85,14 @@ def _parser() -> argparse.ArgumentParser:
         prog="ikigai-layers",
         description="Talk to an ikigai layer door over QUIC, with pinned certificates.",
         epilog="Exit codes: 0 done, 1 the door answered an error, 2 usage or local, "
-        "3 awaiting approval (onboard), 4 refused, 5 unreachable.",
+        "3 awaiting approval (onboard) or nothing to take (work), 4 refused, 5 unreachable, "
+        "6 taken and not handed back (work).",
     )
     top.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = top.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     onboard.add_parser(commands)
+    work.add_parser(commands)
 
     cert = commands.add_parser("cert", help="certificates")
     cert_commands = cert.add_subparsers(dest="cert_command", required=True, metavar="SUBCOMMAND")
@@ -641,6 +645,8 @@ def main(argv: list[str] | None = None) -> int:
         quic.parse_door(args.door)
         if args.command == "follow":
             return cmd_follow(args, cert_dir)
+        if args.command == "work":
+            return work.run(args, _out, cert_dir)
         with door.connect(args.door, cert_dir) as d:
             return COMMANDS[args.command](d, args)
     except (Usage, ValueError, OSError) as e:

@@ -1,0 +1,8 @@
+# A task layer as a mirror's offers meet it, served as urn:layer:offers: the offer and report
+# shapes ikigai-layers' own tests use (tests/common/mod.rs), with `addressed` on, so a report
+# reaches only its offerer.
+model     = "tuplespace"
+label     = "Offers"
+shapes    = "offers.shapes.ttl"
+context   = "offers.context.jsonld"
+addressed = true
