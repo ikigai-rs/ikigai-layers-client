@@ -1,0 +1,9 @@
+{
+  "source": "https://github.com/ikigai-rs/ikigai-gonk-starter/pull/48",
+  "code": "K7Q2M9XW4P",
+  "fingerprint": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+  "proof": "7b214870c3bed39d4f6d5e8326ee1bcec5fd69e9931754295542419f05f05d74",
+  "certificate": "-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----\n",
+  "invite": "inv-1",
+  "request": "@prefix onb: <https://ikigai-rs.dev/ns/onboard#> .\n<urn:iki:onboard:request:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad> a onb:EnrollmentRequest ;\n    onb:invite <urn:iki:onboard:invite:inv-1> ;\n    onb:certificate \"-----BEGIN CERTIFICATE-----\\nYWJj\\n-----END CERTIFICATE-----\\n\" ;\n    onb:fingerprint \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\" ;\n    onb:proof \"7b214870c3bed39d4f6d5e8326ee1bcec5fd69e9931754295542419f05f05d74\" .\n"
+}

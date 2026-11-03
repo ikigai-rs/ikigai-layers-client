@@ -21,6 +21,9 @@ All of it is terminal text from `src/ikigai_layers_client/`:
   fingerprint and the next steps in sentences; `say`, `post` and `out` print the new entry's IRI;
   `save` prints `saved <path> (<n> bytes, <digest>)`; `me` and `take` print indented JSON;
   `tuples` prints one line per tuple or receipt; `--json` prints the door's JSON as it came.
+- **Enrollment** (`onboard.py`, on stdout): `onboard` labels the fingerprint, request,
+  approval status, retry delay in seconds, granted capability IRIs, and saved configuration.
+  Pending approval exits 3 and says to run again; revocation is a named refusal on stderr.
 - **Entries** (`show.py`): `read` prints a header line per entry (sequence number, time, author,
   kind, IRI), then what its kind needs indented four spaces: a message's text, a brief's or an
   issue's title, severity, repository and body, a file's name, size, media type and digest with
@@ -66,6 +69,9 @@ the text inside an entry, which is whatever its author posted.
   (`test_a_file_over_the_bound_is_refused_naming_what_fits`).
 - `tests/test_interop.py` and `tests/test_work.py`, against a real door on loopback (CI's `interop`
   job), pin refusals by name, among them `test_an_unenrolled_certificate_is_refused_naming_its_fingerprint`.
+- `tests/test_onboard.py` checks that pending approval and enrollment are named, local
+  refusals keep the `ikigai-layers: ` prefix, and pairing codes and private keys stay out of
+  output. These tests run on Linux in CI; native Windows output has not been evaluated.
 - **No automated accessibility checker, browser or assistive technology has been used on this
   output.** No screen reader or braille display has read the command's output.
 
@@ -103,3 +109,4 @@ technology, if you are comfortable sharing them. Anything security-sensitive goe
 | Date | Change |
 |---|---|
 | 2026-10-31 | First version. |
+| 2026-11-02 | Added lobby enrollment status output and its tests. |
