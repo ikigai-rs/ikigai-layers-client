@@ -172,6 +172,32 @@ if what == "report":
     Path(report).write_text(os.environ["AGENT_REPORT"])
 if what == "fail":
     sys.exit(7)
+if what == "plant":
+    git = Path(subprocess.run(["git", "rev-parse", "--absolute-git-dir"],
+                              capture_output=True, text=True, check=True).stdout.strip())
+    canary = Path(os.environ["AGENT_PLANTS"])
+    armed = canary.with_suffix(".sh")
+    armed.write_text(f"#!/bin/sh\\necho ran >> {canary}\\ncat\\n")
+    armed.chmod(0o755)
+    (git / "hooks").mkdir(exist_ok=True)
+    for hook in ("post-checkout", "reference-transaction", "pre-auto-gc"):
+        (git / "hooks" / hook).write_text(armed.read_text())
+        (git / "hooks" / hook).chmod(0o755)
+    (git / "info").mkdir(exist_ok=True)
+    (git / "info" / "attributes").write_text("* filter=planted\\n")
+    for key, value in (("core.fsmonitor", armed), ("filter.planted.smudge", armed),
+                       ("filter.planted.clean", armed)):
+        subprocess.run(["git", "config", key, str(value)], check=True)
+if what == "touch":
+    Path(os.environ["AGENT_TOUCHES"]).touch()
+"""
+
+STDIN_AGENT = """\
+import json, os, sys
+from pathlib import Path
+Path(os.environ["AGENT_RECORD"]).write_text(json.dumps({
+    "argv": sys.argv[1:], "stdin": sys.stdin.read(),
+}))
 """
 
 GH_SCRIPT = """\
@@ -196,11 +222,14 @@ def world(tmp_path, monkeypatch):
     """A remote with a main branch, a fake agent, a fake gh, and a config."""
     remote = tmp_path / "remote.git"
     seed = tmp_path / "seed"
+    seed.mkdir()
+    (seed / "seed.txt").write_text("seed\n")
     for argv in (
         ["git", "init", "--quiet", "--bare", "-b", "main", str(remote)],
         ["git", "init", "--quiet", "-b", "main", str(seed)],
+        ["git", "-C", str(seed), "add", "seed.txt"],
         ["git", "-C", str(seed), "-c", "user.name=t", "-c", "user.email=t@example.org", "commit",
-         "--quiet", "--allow-empty", "-m", "first"],
+         "--quiet", "-m", "first"],
         ["git", "-C", str(seed), "push", "--quiet", str(remote), "main"],
     ):  # fmt: skip
         subprocess.run(argv, check=True, capture_output=True)
@@ -284,7 +313,7 @@ def pull_request(number=7, **extra):
 # -- the whole turn -----------------------------------------------------------------
 
 
-def test_an_offer_becomes_a_worktree_an_agent_and_a_hand_back(world):
+def test_an_offer_becomes_a_clone_an_agent_and_a_hand_back(world):
     subject = world.layer.offer("one")
     world.github(prs=[pull_request()], checks=("pass", "pass"))
     outcome = world.worker().run_once()
@@ -296,13 +325,14 @@ def test_an_offer_becomes_a_worktree_an_agent_and_a_hand_back(world):
     assert Path(seen["cwd"]).is_relative_to((world.home / "work").resolve())
     assert "# Task one\n\nDo one." in seen["prompt"]
     assert "NEVER merge" in seen["prompt"] and "Never publish" in seen["prompt"]
+    assert "never a secret" in seen["prompt"]
     assert f"the door says {ALICE} dropped" in seen["prompt"]
 
     [handback] = world.layer.sent("Handback").values()
     assert f"ik:evidence <{REPOSITORY}/pull/7>" in handback
     assert f"ik:offer <{subject}>" in handback and f"ik:addressedTo <{ALICE}>" in handback
     assert "CI green" in handback and "test: pass" in handback
-    assert not Path(seen["cwd"]).exists(), "the worktree goes once handed back"
+    assert not Path(seen["cwd"]).exists(), "the clone goes once handed back"
 
 
 def test_it_never_runs_a_merge_or_publish_command_of_its_own(world):
@@ -570,14 +600,14 @@ def test_an_agent_that_does_not_start_is_a_release(world):
     assert any("did not start" in line for line in world.lines)
 
 
-def test_a_worktree_that_cannot_be_made_is_a_release_without_its_path(world):
+def test_a_clone_that_cannot_be_made_is_a_release_without_its_path(world):
     world.layer.offer("one")
     bad = world.config().repos[SLUG]
     bad.remote = str(world.root / "no-such-remote.git")
     worker = world.worker(repos={SLUG: bad})
     assert worker.run_once().code == work.EXIT_NOT_HANDED_BACK
     [release] = world.layer.sent("Release").values()
-    assert "could not make a worktree" in release and str(world.root) not in release
+    assert "could not make a clone" in release and str(world.root) not in release
     assert any("git clone failed" in line for line in world.lines)
 
 
@@ -742,6 +772,228 @@ def test_a_repository_busy_on_this_machine_is_skipped(world):
     assert any("another loop on this machine" in line for line in world.lines)
 
 
+# -- what one agent can leave for the loop --------------------------------------------
+
+
+@pytest.mark.parametrize("keep", [False, True])
+def test_a_hook_or_config_one_agent_plants_never_runs_for_the_loop(world, monkeypatch, keep):
+    canary = world.root / "canary"
+    monkeypatch.setenv("AGENT_PLANTS", str(canary))
+    monkeypatch.setenv("AGENT_DOES", "plant")
+    world.layer.offer("one")
+    world.github(prs=[pull_request()])
+    assert world.worker(keep=keep).run_once().code == work.EXIT_DONE
+    first = Path(world.seen()["cwd"])
+    assert first.exists() == keep
+    assert not canary.exists(), "cleaning up ran what the agent planted"
+
+    monkeypatch.setenv("AGENT_DOES", "pr")
+    world.layer.offer("two")
+    assert world.worker(keep=keep).run_once().code == work.EXIT_DONE
+    second = Path(world.seen()["cwd"])
+    assert second != first and not canary.exists(), "the next offer ran what the agent planted"
+
+
+def test_each_offer_has_a_clone_of_its_own(world):
+    world.github(prs=[pull_request()])
+    roots = []
+    for name in ("one", "two"):
+        world.layer.offer(name)
+        world.worker(keep=True).run_once()
+        top = subprocess.run(
+            ["git", "rev-parse", "--absolute-git-dir"],
+            cwd=world.seen()["cwd"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        roots.append(Path(top.stdout.strip()))
+    assert roots[0] != roots[1]
+    assert all(not (root / "worktrees").exists() for root in roots)
+    assert not any(p.name == ".source" for p in (world.home / "work" / "o__r").iterdir())
+
+
+def test_the_loops_own_git_runs_no_hook_whatever_the_config_says(tmp_path):
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "--quiet", "-b", "main", str(repo)], check=True)
+    canary = tmp_path / "canary"
+    armed = tmp_path / "armed.sh"
+    armed.write_text(f"#!/bin/sh\necho ran >> {canary}\n")
+    armed.chmod(0o755)
+    elsewhere = tmp_path / "hooks"
+    elsewhere.mkdir()
+    for hooks in (repo / ".git" / "hooks", elsewhere):
+        (hooks / "reference-transaction").write_text(armed.read_text())
+        (hooks / "reference-transaction").chmod(0o755)
+    for key, value in (("core.hooksPath", elsewhere), ("core.fsmonitor", armed)):
+        subprocess.run(["git", "-C", str(repo), "config", key, str(value)], check=True)
+    assert work.git("config", "--get", "core.hooksPath", cwd=repo).stdout.strip() == os.devnull
+    assert work.git("config", "--get", "core.fsmonitor", cwd=repo).stdout.strip() == "false"
+    done = work.git(
+        "-c", "user.name=t", "-c", "user.email=t@example.org",
+        "commit", "--quiet", "--allow-empty", "-m", "x", cwd=repo,
+    )  # fmt: skip
+    assert done.returncode == 0, done.stderr
+    assert work.git("status", cwd=repo).returncode == 0
+    assert not canary.exists()
+
+
+# -- how the prompt reaches the agent -------------------------------------------------
+
+
+def test_a_command_without_the_prompt_word_reads_it_on_stdin(world):
+    script = world.root / "stdin_agent.py"
+    script.write_text(STDIN_AGENT)
+    world.layer.offer("one", brief="Do one, secretly.")
+    world.github(prs=[pull_request()])
+    assert world.worker(command=[sys.executable, str(script)]).run_once().code == work.EXIT_DONE
+    seen = world.seen()
+    assert "Do one, secretly." in seen["stdin"] and "NEVER merge" in seen["stdin"]
+    assert seen["argv"] == []
+
+
+def test_a_command_with_the_prompt_word_gets_an_empty_stdin(world):
+    script = world.root / "stdin_agent.py"
+    script.write_text(STDIN_AGENT)
+    world.layer.offer("one")
+    world.github(prs=[pull_request()])
+    assert world.worker(command=[sys.executable, str(script), "{prompt}"]).run_once()
+    seen = world.seen()
+    assert seen["stdin"] == "" and "Do one." in seen["argv"][0]
+
+
+@pytest.mark.parametrize("preset", ["claude", "codex"])
+def test_a_preset_whose_cli_reads_stdin_keeps_the_prompt_off_argv(preset):
+    assert not any("{prompt}" in word for word in work.PRESETS[preset])
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX modes")
+def test_the_prompt_file_and_the_log_are_this_accounts_alone(world, monkeypatch):
+    monkeypatch.setenv("AGENT_DOES", "fail")
+    world.layer.offer("one")
+    previous = os.umask(0o022)
+    try:
+        world.worker().run_once()
+    finally:
+        os.umask(previous)
+    [prompt] = (world.home / "work" / "o__r").glob("*.prompt.md")
+    [log] = (world.home / "work" / "o__r").glob("*.log")
+    assert prompt.stat().st_mode & 0o077 == 0 and log.stat().st_mode & 0o077 == 0
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["sh", "-c", "agent {prompt}"],
+        ["bash", "-c", "agent '{prompt}'"],
+        ["bash", "-lc", "agent {prompt}"],
+        ["/bin/zsh", "-c", "agent {prompt}"],
+        ["env", "bash", "-c", "agent {prompt}"],
+        ["/usr/bin/env", "-S", "sh -c 'agent {prompt}'"],
+        ["busybox", "sh", "-c", "agent {prompt}"],
+        "sh -c 'agent {prompt}'",
+    ],
+)
+def test_a_command_that_wraps_the_prompt_in_a_shell_is_refused(tmp_path, command):
+    config = tmp_path / "w.toml"
+    config.write_text(
+        f'layer="tasks"\nactor="{AGENT}"\nrouters=["{ALICE}"]\norgs=["o"]\n'
+        f"[agent]\ncommand={json.dumps(command)}\n"
+    )
+    with pytest.raises(ValueError, match="would run an offer's text as shell commands"):
+        work.load_config(config, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["sh", "-c", "agent < {prompt_file}"],
+        ["sh", "-c", "agent"],
+        ["agent", "{prompt}"],
+        ["agent", "--prompt={prompt}", "--name", "sharp"],
+    ],
+)
+def test_a_command_with_no_prompt_inside_a_shell_is_admitted(tmp_path, command):
+    config = tmp_path / "w.toml"
+    config.write_text(
+        f'layer="tasks"\nactor="{AGENT}"\nrouters=["{ALICE}"]\norgs=["o"]\n'
+        f"[agent]\ncommand={json.dumps(command)}\n"
+    )
+    assert work.load_config(config, tmp_path).command == command
+
+
+# -- the stop file --------------------------------------------------------------------
+
+
+def test_the_stop_file_lets_the_agent_finish_and_stops_the_loop_before_the_next(
+    world, monkeypatch, tmp_path
+):
+    first = world.layer.offer("first")
+    second = world.layer.offer("second")
+    world.github(prs=[pull_request()])
+    worker = world.worker()
+    monkeypatch.setenv("AGENT_DOES", "touch")
+    monkeypatch.setenv("AGENT_TOUCHES", str(worker.stop_file))
+    timer = threading.Timer(60, worker.shutdown.set)
+    timer.start()
+    try:
+        assert worker.loop(tmp_path / "cursor", wait=1, backoff=0.01) == work.EXIT_DONE
+    finally:
+        timer.cancel()
+    assert not worker.shutdown.is_set(), "the stop file stopped it, not the timer"
+    assert first in world.layer.taken and second in world.layer.pending
+    assert world.layer.sent("Handback"), "a stop file does not stop a running agent"
+    assert [line for line in world.lines if line.startswith("stopping:")] == [
+        f"stopping: {worker.stop_file} exists (remove it to run again)"
+    ]
+    assert worker.stop_file.exists(), "it stays until someone removes it"
+
+
+def test_the_stop_file_is_seen_during_an_outage(world, tmp_path):
+    worker = world.worker()
+    worker.stop_file.parent.mkdir(parents=True)
+    world.layer.unreachable = 1000
+    calls = []
+    real = worker.run_once
+
+    def touch_then_run():
+        calls.append(1)
+        worker.stop_file.touch()
+        return real()
+
+    worker.run_once = touch_then_run
+    assert worker.loop(tmp_path / "cursor", wait=1, backoff=0.01) == work.EXIT_DONE
+    assert len(calls) == 1
+
+
+def test_the_stop_file_is_seen_between_the_listing_and_the_take(world):
+    world.layer.offer("one")
+    worker = world.worker()
+    real = worker.survey
+
+    def touch(d):
+        answer = real(d)
+        worker.stop_file.parent.mkdir(parents=True, exist_ok=True)
+        worker.stop_file.touch()
+        return answer
+
+    worker.survey = touch
+    outcome = worker.run_once()
+    assert outcome.code == work.EXIT_DONE and outcome.summary.startswith("stopping:")
+    assert world.layer.taken == {} and not world.record.exists()
+
+
+def test_the_stop_file_still_lets_an_owed_report_go(world):
+    subject = world.layer.offer("one")
+    world.layer.as_taken[subject] = world.layer.pending.pop(subject)
+    world.layer.taken[subject] = AGENT
+    work.State(world.root / "state").write(subject, state="running", offerer=ALICE)
+    worker = world.worker()
+    worker.stop_file.touch()
+    assert worker.run_once().code == work.EXIT_DONE
+    assert world.layer.sent("Release")
+
+
 # -- the loop -----------------------------------------------------------------------
 
 
@@ -849,6 +1101,27 @@ def test_work_plan_says_what_and_why_and_takes_nothing(world, command):
     assert world.layer.taken == {} and len(world.layer.pending) == 2
 
 
+def test_work_run_once_with_the_stop_file_exits_cleanly_and_takes_nothing(world, command):
+    config = write_config(world)
+    world.layer.offer("one")
+    stop = world.home / "agent.work" / "stop"
+    stop.parent.mkdir()
+    stop.touch()
+    code, out, err = command("run", "--once", "--config", str(config))
+    assert code == 0, err
+    assert f"ikigai-layers work: stopping: {stop} exists (remove it to run again)" in out
+    assert world.layer.taken == {}
+
+    code, out, _ = command("plan", "--config", str(config))
+    assert code == 0 and f"{stop} exists, so `work run` would stop" in out
+
+    stop.unlink()
+    world.github(prs=[pull_request()])
+    code, _, err = command("run", "--once", "--config", str(config))
+    assert code == 0, err
+    assert world.layer.taken
+
+
 def test_a_signal_ends_the_wait_on_the_feed(world, command, monkeypatch):
     config = write_config(world)
     real = FakeConnection.source
@@ -909,13 +1182,13 @@ def test_the_work_root_must_be_under_this_accounts_home(tmp_path, root, said):
         work.work_root(root, tmp_path)
 
 
-def test_presets_are_the_workers(tmp_path):
+def test_presets_are_refused_by_name_when_unknown(tmp_path):
     config = tmp_path / "w.toml"
     config.write_text(
         f'layer="tasks"\nactor="{AGENT}"\nrouters=["{ALICE}"]\norgs=["o"]\n'
         '[agent]\npreset="codex"\n'
     )
-    assert work.load_config(config, tmp_path).command == ["codex", "exec", "{prompt}"]
+    assert work.load_config(config, tmp_path).command == ["codex", "exec", "-"]
     config.write_text(
         f'layer="tasks"\nactor="{AGENT}"\nrouters=["{ALICE}"]\norgs=["o"]\n[agent]\npreset="nope"\n'
     )

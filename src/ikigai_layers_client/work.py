@@ -18,8 +18,9 @@ with one offer, in order:
    push to. Everything checked before the take, because a take cannot be undone quietly.
 2. Take it: the door's atomic take. Losing that race moves on to the next offer. The routing
    is checked again on the tuple as taken, and the brief is built from that.
-3. A fresh worktree of ``origin/<default branch>`` under the work root, which must be under
-   this account's own home.
+3. A fresh clone of the repository, on a new branch from ``origin/<default branch>``, under the
+   work root, which must be under this account's own home. Each offer has its own, because an
+   agent can write anything in its ``.git``, and no later git command of this loop reads that.
 4. The agent, from the configured command, stopped when its budget runs out. A watcher reads the
    take's receipt on a fresh connection (a connection's authority is minted when it opens) and
    posts a ``Progress`` a day; a refusal there means the grant is gone, and the agent is stopped.
@@ -34,15 +35,18 @@ agent's own Unix account with the agent's own certificate: root is refused, a ``
 account does not own (or others can read) is refused, and the door must say this certificate is
 the configured ``actor``, so a person's set is never used by mistake. The door enforces the
 grant: a denial stops the loop, which tries nothing else and holds no other identity. The agent
-gets this account's environment less the publishing tokens (:data:`PUBLISH_ENV`). That account's
-own GitHub and registry permissions are the real fence; these rules cannot replace them.
+gets this account's environment less the publishing tokens (:data:`PUBLISH_ENV`), and nothing
+else is removed. A router can therefore run code as this account, with its credentials: that
+account's own GitHub and registry permissions are the real fence, and these rules cannot replace
+them.
 
 Local paths stay out of a report, and an offer's text stays out of this command's output
 (subjects and reasons only): it is someone else's words, and it goes to the agent alone.
 
 Exit codes, beside the command's usual 1, 2, 4 and 5 (a refusal from the door stops the loop):
 
-    exit 0  --once: handed back with evidence; or `plan` answered; or stopped by a signal
+    exit 0  --once: handed back with evidence; or `plan` answered; or stopped by a signal or
+            the stop file
     exit 3  --once: nothing to take
     exit 6  --once: the offer was taken and released, or its report is still owed
 """
@@ -75,11 +79,13 @@ from .files import one
 
 EXIT_DONE, EXIT_NOTHING, EXIT_NOT_HANDED_BACK = 0, 3, 6
 
-#: The agents this loop knows by name: ``tools/worker.py``'s presets, word for word. An
-#: unattended agent also needs its own permission settings; this loop does not choose them.
+#: The agents this loop knows by name: ``tools/worker.py``'s presets, except that the prompt goes
+#: on stdin where the agent's CLI reads it there, because other local users can read an argv.
+#: Hermes' ``-z`` takes it only as an argument. An unattended agent also needs its own permission
+#: settings; this loop does not choose them.
 PRESETS: dict[str, list[str]] = {
-    "claude": ["claude", "-p", "{prompt}"],
-    "codex": ["codex", "exec", "{prompt}"],
+    "claude": ["claude", "-p"],
+    "codex": ["codex", "exec", "-"],
     "hermes": ["hermes", "-z", "{prompt}"],
     "hermes-profile": ["hermes", "--profile", "{profile}", "-z", "{prompt}"],
 }
@@ -131,6 +137,7 @@ _KEYS = {
     "agent",
 }
 _GREEN = {"success", "skipped", "neutral"}
+_SHELLS = {"sh", "bash", "dash", "ash", "zsh", "ksh", "mksh", "fish", "csh", "tcsh"}
 
 
 class Refused(quic.TrustError):
@@ -250,6 +257,20 @@ def work_root(text: str, home: Path) -> Path:
     return root
 
 
+def check_command(command: list[str], where: Path) -> None:
+    """Refuse a command that hands ``{prompt}`` to a shell, directly or through a wrapper like
+    ``env``: the shell would run an offer's text as commands. Other placeholders are the loop's
+    own values, and ``{prompt_file}`` is only a path."""
+    for at, word in enumerate(command):
+        shell = next((w for w in word.split() if Path(w).name in _SHELLS), None)
+        if shell is not None and any("{prompt}" in later for later in command[at:]):
+            raise ValueError(
+                f"{where}: [agent] command passes {{prompt}} to {shell}, which would run an "
+                "offer's text as shell commands: leave {prompt} out to get the prompt on stdin, "
+                "or use {prompt_file}"
+            )
+
+
 def load_config(path: Path, home: Path | None = None) -> Config:
     """Read and check ``worker.toml``. Every problem is a ``ValueError`` naming the setting, and
     an unknown key is one too: a misspelled fence must not read as no fence."""
@@ -301,6 +322,7 @@ def load_config(path: Path, home: Path | None = None) -> Config:
             raise ValueError(f"{path}: [agent] command is a list of words")
     if not command:
         raise ValueError(f"{path}: [agent] command is empty")
+    check_command(command, path)
     for key in ("budget", "ci_poll", "check_every"):
         if key in t and seconds(t[key], key) < 1:
             raise ValueError(f"{path}: {key} must be at least 1s")
@@ -571,9 +593,13 @@ def accepted_evidence(url: str, slug: str) -> bool:
 
 
 def git(*argv: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
-    """Run git without ever asking for a password on a terminal nobody is at."""
+    """Run git without ever asking for a password on a terminal nobody is at, and with hooks and
+    fsmonitor off whatever the configuration says: this is the loop's own git, outside any
+    agent's budget. A ``-c`` outranks every configuration file, and ``git clone`` does not keep it
+    in the clone it makes."""
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-    return subprocess.run(["git", *argv], cwd=cwd, capture_output=True, text=True, env=env)
+    off = ["-c", f"core.hooksPath={os.devnull}", "-c", "core.fsmonitor=false"]
+    return subprocess.run(["git", *off, *argv], cwd=cwd, capture_output=True, text=True, env=env)
 
 
 class StepFailed(Exception):
@@ -592,7 +618,6 @@ class Workspace:
     """Where one offer is worked."""
 
     path: Path
-    source: Path
     branch: str
     log: Path
     prompt: Path
@@ -600,35 +625,30 @@ class Workspace:
 
 
 def make_workspace(root: Path, slug: str, remote: str, base: str, offer: str) -> Workspace:
-    """A fresh worktree of ``origin/<base>`` at ``<root>/<owner>__<name>/offer-<digest>``, from
-    one clone per repository. The names come from a digest of the offer's IRI, never its text. A
-    directory left by an earlier run is never reused or removed."""
+    """A fresh clone on a new branch from ``origin/<base>``, at
+    ``<root>/<owner>__<name>/offer-<digest>``. Never a clone an earlier agent had: it can leave
+    hooks and configuration (a filter, say, that a checkout runs) in a ``.git``, and disabling
+    them one by one would not reach them all. The names come from a digest of the offer's IRI,
+    never its text. A directory left by an earlier run is never reused or removed."""
     home = root / slug.replace("/", "__")
     home.mkdir(parents=True, exist_ok=True)
-    source = home / ".source"
-    if not (source / ".git").exists():
-        must(git("clone", "--no-checkout", "--quiet", remote, str(source)), "git clone")
-    else:
-        url = git("remote", "get-url", "origin", cwd=source).stdout.strip()
-        if url != remote:
-            raise StepFailed(
-                f"{source} is a clone of {url}, and this offer needs {remote}: move it aside, "
-                "and the next offer clones afresh"
-            )
-    must(git("fetch", "--prune", "--quiet", "origin", cwd=source), "git fetch")
     stem, name, k = f"offer-{_digest(offer)}", f"offer-{_digest(offer)}", 1
     while (home / name).exists():
         k += 1
         name = f"{stem}.{k}"
     branch = f"worker/{name}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}"
     path = home / name
-    must(
-        git("worktree", "add", "--quiet", "-b", branch, str(path), f"origin/{base}", cwd=source),
-        "git worktree add",
-    )
+    must(git("clone", "--no-checkout", "--quiet", remote, str(path)), "git clone")
+    try:
+        must(
+            git("checkout", "--quiet", "-b", branch, f"origin/{base}", cwd=path),
+            "git checkout",
+        )
+    except StepFailed:
+        shutil.rmtree(path, ignore_errors=True)
+        raise
     return Workspace(
         path=path,
-        source=source,
         branch=branch,
         log=home / f"{name}.log",
         prompt=home / f"{name}.prompt.md",
@@ -637,12 +657,9 @@ def make_workspace(root: Path, slug: str, remote: str, base: str, offer: str) ->
 
 
 def remove_workspace(ws: Workspace) -> None:
-    """The worktree and its local branch; a pushed branch stays on GitHub, and the log stays."""
-    git("worktree", "remove", "--force", str(ws.path), cwd=ws.source)
-    if ws.path.exists():
-        shutil.rmtree(ws.path)
-    git("worktree", "prune", cwd=ws.source)
-    git("branch", "-D", ws.branch, cwd=ws.source)
+    """The clone; a pushed branch stays on GitHub, and the log stays. No git command runs here:
+    the agent has had this ``.git``. What cannot be removed stays, and is never reused."""
+    shutil.rmtree(ws.path, ignore_errors=True)
     for leftover in (ws.prompt, ws.report):
         leftover.unlink(missing_ok=True)
 
@@ -819,7 +836,8 @@ its rules hold beside these.
    that fails because of the defect. If it does not hold, change nothing and open no pull
    request: write the URL of your evidence (a pull request, or a commit in this repository) on
    the FIRST line of {report_file}, and what you found on the lines after, leaving out anything
-   private: those lines go to the offerer. Finding no change is needed is a good outcome.
+   private and never a secret, token or key: those lines are posted to the layer as you wrote
+   them. Finding no change is needed is a good outcome.
 3. Work only in this directory, {workdir}, on the branch {branch}, made for you from
    origin/{base}. Never read or write any other checkout.
 4. Every change through a pull request with green CI: commit, push this branch
@@ -873,6 +891,14 @@ def agent_env(ws: Workspace, environ: dict[str, str] | None = None) -> dict[str,
     kept = {k: v for k, v in source.items() if not PUBLISH_ENV.match(k)}
     kept["CARGO_TARGET_DIR"] = str(ws.path / "target")
     return kept
+
+
+def _private(path: str, flags: int) -> int:
+    """An ``opener`` for a file only this account reads: the prompt holds an offer's text, and
+    moving it off argv would gain nothing if the file were as readable. A log may quote it."""
+    fd = os.open(path, flags, 0o600)
+    os.fchmod(fd, 0o600)
+    return fd
 
 
 def stop_process(proc: subprocess.Popen, grace: int) -> None:
@@ -1042,12 +1068,20 @@ class Worker:
         self.sleep = sleep
         self.state_dir = state_dir
         self.state = State(state_dir)
+        self.stop_file = state_dir / "stop"
         self.shutdown = threading.Event()
         self.idle = False
         self.explained: set[tuple[str, str]] = set()
         self.tuples = f"urn:layer:{config.layer}:tuples"
 
     # -- reading ------------------------------------------------------------------
+
+    def stopping(self) -> str | None:
+        """What to say when the stop file is there; it stops the loop between offers, and a
+        running agent finishes. Only whoever made it removes it."""
+        if not self.stop_file.exists():
+            return None
+        return f"stopping: {self.stop_file} exists (remove it to run again)"
 
     def check_actor(self, d) -> None:
         """The door must say this certificate is the configured actor."""
@@ -1154,11 +1188,15 @@ class Worker:
         with self.connect(30) as d:
             self.check_actor(d)
             self.settle(d)
+            if stopping := self.stopping():
+                return Outcome(EXIT_DONE, stopping)
             pending = self.survey(d)
         for offer, why in pending:
             if why is not None:
                 self.explain(offer, why)
                 continue
+            if stopping := self.stopping():
+                return Outcome(EXIT_DONE, stopping)
             slug = repo_problem(offer, self.config)[0]
             lock = FileLock(self.state_dir / "locks" / f"{slug.replace('/', '__')}.lock")
             if not lock.acquire():
@@ -1212,14 +1250,15 @@ class Worker:
         try:
             ws = make_workspace(self.config.root, slug, remote, base, offer.subject)
         except (StepFailed, OSError) as e:
-            self.say(f"no worktree for {_printable(offer.subject)}: {e}")
-            return self.release(offer, "This worker could not make a worktree of the repository.")
+            self.say(f"no clone for {_printable(offer.subject)}: {e}")
+            return self.release(offer, "This worker could not make a clone of the repository.")
         return self.run_agent(offer, slug, base, ws)
 
     def run_agent(self, offer: Offer, slug: str, base: str, ws: Workspace) -> Outcome:
         """Run the agent, watch it, read its pull requests, and report."""
         text = brief(offer, ws, base, self.config.budget, self.config.layer)
-        ws.prompt.write_text(text, encoding="utf-8")
+        with open(ws.prompt, "w", encoding="utf-8", opener=_private) as stream:
+            stream.write(text)
         argv = agent_argv(
             self.config.command,
             {
@@ -1238,13 +1277,18 @@ class Worker:
         watcher.start()
         started = time.monotonic()
         try:
-            with ws.log.open("w", encoding="utf-8") as out:
+            # A command with no {prompt} reads the prompt on stdin.
+            on_argv = any("{prompt}" in word for word in self.config.command)
+            with (
+                open(ws.log, "w", encoding="utf-8", opener=_private) as out,
+                open(os.devnull, "rb") if on_argv else ws.prompt.open("rb") as stdin,
+            ):
                 try:
                     proc = subprocess.Popen(
                         argv,
                         cwd=ws.path,
                         env=agent_env(ws),
-                        stdin=subprocess.DEVNULL,
+                        stdin=stdin,
                         stdout=out,
                         stderr=subprocess.STDOUT,
                         start_new_session=True,
@@ -1255,7 +1299,7 @@ class Worker:
                 ended, code = self.watch(proc, started, watcher)
             exited = datetime.now(UTC)
             took = spoken(time.monotonic() - started)
-            kept = f"the worktree is kept at {ws.path} (branch {ws.branch}, log {ws.log})"
+            kept = f"the clone is kept at {ws.path} (branch {ws.branch}, log {ws.log})"
             gh = GitHub(self.config.gh, slug)
             if ended == "lost":
                 self.say(f"stopped the agent after {took}: the door refused: {watcher.why}; {kept}")
@@ -1413,6 +1457,9 @@ class Worker:
         delay, outage = backoff, False
         try:
             while not self.shutdown.is_set():
+                if stopping := self.stopping():
+                    self.say(stopping)
+                    return EXIT_DONE
                 try:
                     if self.run_once().code != EXIT_NOTHING:
                         continue  # one worked: there may be another
@@ -1471,7 +1518,7 @@ def add_parser(commands) -> None:
         "work",
         help="take offers routed to this agent, run it, and report back",
         description="Follow a task layer as the agent's own account: take an offer its routers "
-        "dropped, run the configured agent in a fresh worktree of the repository it names, and "
+        "dropped, run the configured agent in a fresh clone of the repository it names, and "
         "report the pull request and its CI back to the offerer. It never merges or publishes.",
     )
     actions = word.add_subparsers(dest="work_command", required=True, metavar="ACTION")
@@ -1526,7 +1573,10 @@ def run(args, say, cert_dir: Path) -> int:
             outcome = worker.run_once()
             worker.say(outcome.summary)
             return outcome.code
-        worker.say(f"following layer {config.layer} as {config.actor}")
+        worker.say(
+            f"following layer {config.layer} as {config.actor}; "
+            f"stop between offers with: touch {worker.stop_file}"
+        )
         return worker.loop(state_dir / "feed.cursor")
     finally:
         for sig, handler in previous.items():
@@ -1553,4 +1603,6 @@ def plan(worker: Worker) -> int:
         worker.say(f"would take {name}" if why is None else f"would skip {name}: {why}")
     if not pending:
         worker.say(f"no offers pending in layer {worker.config.layer}")
+    if worker.stopping():
+        worker.say(f"{worker.stop_file} exists, so `work run` would stop before taking anything")
     return EXIT_DONE

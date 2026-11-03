@@ -295,11 +295,24 @@ rest); `follow --plain` prints the door's six fields alone and reads no entry.
 ## Running an agent on offers routed to it
 
 `ikigai-layers work run` is the loop for a collaborator without gonk: it follows a task layer,
-takes an offer routed to this agent, runs Claude Code, Codex or Hermes in a fresh worktree of the
+takes an offer routed to this agent, runs Claude Code, Codex or Hermes in a fresh clone of the
 repository the offer names, and posts a report back to the offerer with the pull request and its
 CI state. It follows `tools/worker.py` from
 [ikigai-gonk-starter](https://github.com/ikigai-rs/ikigai-gonk-starter), with the layer in the
 ledger's place. It needs macOS, Linux or WSL2, `git`, and `gh` signed in as the agent's account.
+
+**Read this before you run it:**
+
+- **Listing a principal in `routers` lets it run code under this Unix account, with that account's
+  credentials.** An offer's brief is the prompt of an agent that runs commands. Add only principals
+  you would give a shell on this account.
+- **Run the loop as a dedicated account,** holding nothing but what the agent should use. Nothing
+  checks this for you: a loop under your own account puts your own keys and tokens within the
+  agent's reach.
+- **The environment scrub removes publishing tokens only.** `GH_TOKEN`, cloud credentials and
+  everything else in the environment stay, and so does every file in the account's home.
+- **The agent's report file is posted to the layer.** Its lines are bounded in length and not
+  filtered, so it must never contain secrets. The agent's brief says so, but nothing checks it.
 
 Enroll the agent with `onboard` (or the manual exchange above), then write `worker.toml` in its
 cert set:
@@ -314,7 +327,7 @@ orgs    = ["ikigai-rs"]                            # or [repos."owner/name"] for
 # kinds  = ["bug"]            # only offers of one of these kinds
 # budget = "2h"               # the agent's wall-clock; also check_every, grace, ci_wait, ci_poll
 # work_root = "~/work"        # must be under this account's home
-# keep = false                # keep the worktree after a hand-back
+# keep = false                # keep the clone after a hand-back
 
 [agent]
 preset = "claude"             # or codex, hermes; or command = ["my-agent", "{prompt_file}"]
@@ -327,10 +340,24 @@ ikigai-layers work run --name yourname-agent         # follow the layer until st
 ```
 
 An unattended agent also needs its own permission settings (Claude Code's allowlist or permission
-mode, Codex's sandbox and approval policy); this command does not choose them for you. Stopping it
-(SIGTERM or Ctrl-C) stops the agent and releases the offer. A command's placeholders are
-`{prompt}`, `{prompt_file}`, `{workdir}`, `{branch}`, `{offer}`, `{repo}`, `{report_file}` and
-`{profile}`.
+mode, Codex's sandbox and approval policy); this command does not choose them for you.
+
+There are two ways to stop it:
+
+- **Between offers:** `touch ~/.ikigai/layers-client/NAME.work/stop`. A running agent finishes and
+  reports, then the loop exits 0 before taking another offer. An idle loop notices within a minute,
+  or within five minutes while the door is unreachable. The file stays until you remove it, and
+  until then the loop stops as soon as it starts. A report it still owes stays in
+  `NAME.work/offers.json` for the next run that reaches the door.
+- **Now:** SIGTERM or Ctrl-C stops the running agent and releases the offer.
+
+A command's placeholders are `{prompt}`, `{prompt_file}`, `{workdir}`, `{branch}`, `{offer}`,
+`{repo}`, `{report_file}` and `{profile}`. A command without `{prompt}` gets the prompt on stdin.
+Prefer that or `{prompt_file}`, since other local users can read a process's arguments. The `claude`
+and `codex` presets use stdin. Hermes' `-z` only takes the prompt as an argument, so the `hermes`
+presets put it there. The prompt file and the log are readable by this account alone. A command that
+passes `{prompt}` to a shell (`sh -c`, `bash -c`, also through `env`) is refused, because the shell
+would run the offer's text as commands.
 
 **Which offers it takes.** All of these, checked before the take and again on the tuple as taken:
 
@@ -355,11 +382,12 @@ record:
 | --- | --- | --- |
 | `ik:Progress` | when the agent starts, then once a day | a note that an agent is working |
 | `ik:Handback` | a pull request, or an accepted URL on the report file's first line | `ik:evidence` and a note with each pull request's CI state |
-| `ik:Release` | no evidence, budget spent, stopped, or no worktree | a note saying why; any worktree is kept |
+| `ik:Release` | no evidence, budget spent, stopped, or no clone | a note saying why; any clone is kept |
 
 Evidence is what the controller accepts, a pull request URL or a commit URL in the offered
-repository. A note is at most 2,000 characters and names no local path, but it can quote what the
-agent wrote in its report file. The controller treats all of this as data: it checks the evidence
+repository. A note is at most 2,000 characters and this command adds no local path to it, but it
+quotes what the agent wrote in its report file as written, so that file must never contain secrets.
+The controller treats all of this as data: it checks the evidence
 and decides what to do. A report the door did not answer is kept in `NAME.work/offers.json` beside
 the cert set and sent again, and a loop that restarts releases an offer it was still holding.
 
@@ -373,17 +401,23 @@ the cert set and sent again, and a loop that restarts releases an offer it was s
 - **As the agent's account.** Run it under a Unix account of its own. It refuses root, a
   `client.key` that another account owns or others can read, a work root outside this home, and a
   certificate the door says is not `actor`.
+- **One clone per offer.** No offer's agent ever gets a clone another agent had, and the loop runs
+  no git command in a clone once its agent has started: removing it is deleting it. The loop's own
+  git also runs with hooks and fsmonitor off. That closes the `.git` directory as a way to run code
+  outside an agent's budget. It does not contain an agent under this account, which can still edit
+  `~/.gitconfig` or leave a process running after it exits. Only a separate account or a container
+  limits that. Each offer clones the whole repository, so a large one costs time and disk per offer.
 - **Never above the agent's grant.** The door enforces the grant, and this command holds one
   certificate. A denial stops the loop with the door's words. While the agent runs, a fresh
   connection reads the take's receipt every `check_every`; a refusal stops the agent and keeps its
   work, and an outage does not. The agent's own process can read the certificate, so that
   certificate's grant is the limit: never point `work` at your own set.
 
-What it does not carry over from `tools/worker.py`: the disk floor, the pruning of kept worktrees,
+What it does not carry over from `tools/worker.py`: the disk floor, the pruning of kept clones,
 the usage hold, pools and status items. One agent per repository holds on this machine only; the
 layer has no shared claim on a repository to read.
 
-`work run --once` exits **0** when handed back with evidence, **3** with nothing to take, and **6**
+`work run --once` exits **0** when handed back with evidence or stopped, **3** with nothing to take, and **6**
 when the offer was taken and not handed back (released, or its report is still owed). Otherwise the
 codes below hold.
 
@@ -440,6 +474,7 @@ else.
 | 4 | `refused: the door says this certificate is … and the configuration's actor is …` (`work`) | use the agent's own set, or correct `actor` |
 | 4 | `refused: … is readable by others`, `refused: the loop does not run as root` (`work`) | fix the key's mode, or run as the agent's account |
 | 2 | a usage problem, or a file in your set: `…/server.crt is missing: it should hold the door's certificate` | fix the named file or argument |
+| 2 | `[agent] command passes {prompt} to sh, which would run an offer's text as shell commands` (`work`) | leave `{prompt}` out to get the prompt on stdin, or use `{prompt_file}` |
 | 4 | `refused: … does not match --pin: nothing was sent` | get the door certificate and fingerprint from the operator again |
 | 4 | `refused: the server … is not the pinned door` | your `server.crt` is not this door's; get the right one |
 | 4 | `refused: the door … refused this client certificate … not in the door's trust list` | the operator has not installed your `client.crt` yet |

@@ -40,8 +40,10 @@ All of it is terminal text from `src/ikigai_layers_client/`:
 - **The agent loop** (`work.py`, on stdout): `work run` prints one line per thing it does, each
   starting `ikigai-layers work:` (a take, a skip with its reason, the agent's start, a report owed,
   an outage), durations in words (`1 hour 1 minute`), and `--once` ends on a line saying how the
-  offer ended. `work plan` prints `would take <subject>` or `would skip <subject>: <reason>` per
-  offer. Neither ever prints an offer's title or brief.
+  offer ended. The stop file is named when the loop starts and again when it stops
+  (`stopping: <path> exists (remove it to run again)`). `work plan` prints `would take <subject>`
+  or `would skip <subject>: <reason>` per offer, and says when the stop file is there. Neither
+  ever prints an offer's title or brief.
 - **Help** (`--help`): argparse's usage text, with the descriptions and exit codes in words.
 
 Not this repository's: the door's error sentences, which are printed as the door wrote them, and
@@ -81,7 +83,8 @@ the text inside an entry, which is whatever its author posted.
   (`test_a_refusal_keeps_its_first_words_and_its_code`, `test_a_bad_configuration_is_refused_by_name`),
   one line per outage (`test_the_loop_follows_the_feed_and_reports_an_outage_once`) and per skip
   (`test_a_skip_is_said_once_not_at_every_poll`), and that an offer's text and its escape sequences
-  stay out of the output (`test_offer_text_never_reaches_this_commands_output`).
+  stay out of the output (`test_offer_text_never_reaches_this_commands_output`), and the stop
+  file's lines (`test_work_run_once_with_the_stop_file_exits_cleanly_and_takes_nothing`).
 - `tests/test_onboard.py` checks that pending approval and enrollment are named, local
   refusals keep the `ikigai-layers: ` prefix, and pairing codes and private keys stay out of
   output. These tests run on Linux in CI; native Windows output has not been evaluated.
@@ -123,4 +126,4 @@ technology, if you are comfortable sharing them. Anything security-sensitive goe
 |---|---|
 | 2026-10-31 | First version. |
 | 2026-11-02 | Added lobby enrollment status output and its tests. |
-| 2026-11-03 | Added the `work` agent loop's lines, refusals and tests. |
+| 2026-11-03 | Added the `work` agent loop's lines, refusals and tests, with its stop file's lines and its refusal of a prompt passed to a shell. |
