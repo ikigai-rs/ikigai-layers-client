@@ -2,8 +2,7 @@
 
 No door, no GitHub and no model: the fake layer keeps the rules a real door keeps (one taker,
 the host's stamps, a report only from the taker), and the agent is a small script told by its
-brief's repository what to do. ``tests/test_interop.py`` runs the same turns against the real
-Rust door.
+environment what to do. ``tests/test_interop.py`` runs the same turns against the real Rust door.
 """
 
 from __future__ import annotations
