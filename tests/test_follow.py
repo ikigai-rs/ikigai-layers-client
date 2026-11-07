@@ -37,11 +37,14 @@ class FakeDoor:
     def __init__(self, script):
         self.script = list(script)
         self.reads = []
+        self.timeout = None
+        self.call_timeouts = []
         self.closed = False
 
     def source(self, iri, **args):
         assert iri == "urn:layers:feed" and args["as"] == "application/json"
         self.reads.append(args)
+        self.call_timeouts.append(self.timeout)
         item = self.script.pop(0)
         if isinstance(item, Exception):
             raise item
@@ -59,6 +62,7 @@ def follower(tmp_path, script, *, layers=("talk",), connect_fails=0, **kwargs):
         attempts["n"] += 1
         if attempts["n"] <= connect_fails:
             raise ikigai.ConnectionLost("cannot reach quic://door:1 (refused)")
+        door.timeout = timeout
         return door
 
     f = Follower(
@@ -106,6 +110,16 @@ def test_from_now_skips_history_without_printing_it(tmp_path):
     assert f.run(from_now=True, max_reads=1) == 0
     assert [line.split()[1] for line in lines] == ["3"]
     assert door.reads[0]["wait"] == "1" and door.reads[1]["after"] == "talk:2"
+
+
+@pytest.mark.parametrize("wait", [1, 50, 60])
+@pytest.mark.parametrize("from_now", [False, True])
+def test_long_polls_have_their_full_wait_plus_slack(tmp_path, wait, from_now):
+    f, door, _, _ = follower(tmp_path, [[], [], []], wait=wait)
+    assert f.run(from_now=from_now, max_reads=2) == 0
+    assert [read["wait"] for read in door.reads] == ((["1"] if from_now else []) + [str(wait)] * 2)
+    for read, timeout in zip(door.reads, door.call_timeouts, strict=True):
+        assert timeout >= int(read["wait"]) + 30
 
 
 def test_reset_starts_a_layer_again_from_zero(tmp_path):
