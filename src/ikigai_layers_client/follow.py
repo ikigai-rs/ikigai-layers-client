@@ -25,10 +25,10 @@ AFTER the lines it covers are printed: a crash between the two replays an event 
 and never skips one. A replayed sequence number is not printed twice.
 
 Bounded everywhere, and nothing polls: ``wait`` is at most 60 s (the door's own bound), each
-call is abandoned after ``wait`` + 30 s, an unreachable door is retried with a backoff that
-doubles to 5 min and is reported ONCE per outage (plus one line when it recovers), and a
-stale cursor or a refusal stops the follower with a non-zero exit instead of looping,
-because neither fixes itself:
+call is abandoned after the configured ``wait`` + 30 s, an unreachable door is retried with
+a backoff that doubles to 5 min and is reported ONCE per outage (plus one line when it
+recovers), and a stale cursor or a refusal stops the follower with a non-zero exit instead
+of looping, because neither fixes itself:
 
     exit 0  --once read fine, or --max-reads reached
     exit 2  usage, the state file is unreadable, or the cert set is (named)
@@ -188,7 +188,9 @@ class Follower:
         ``None`` for an event that is not an entry, or that was not read."""
         try:
             if self._door is None:
-                self._door = self._connect(wait + CALL_SLACK)
+                # The connection's timeout applies to every call, including long polls
+                # after the one-second --from-now history reads.
+                self._door = self._connect(max(self.wait, wait) + CALL_SLACK)
             answer = self._door.source(
                 "urn:layers:feed",
                 after=format_cursor(cursor),
