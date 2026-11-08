@@ -31,6 +31,8 @@ FIXTURES = Path(__file__).parent / "fixtures" / "layers"
 GRANTS = {
     "alice": [
         "urn:cap:collab:read:demo",
+        "urn:cap:layer:read:releases",
+        "urn:cap:layer:feed:releases",
         "urn:cap:layer:feed:talk",
         "urn:cap:layer:feed:tasks",
         "urn:cap:layer:out:tasks",
@@ -48,6 +50,8 @@ GRANTS = {
     ],
     "alice-agent": [
         "urn:cap:collab:read:demo",
+        "urn:cap:layer:read:releases",
+        "urn:cap:layer:feed:releases",
         "urn:cap:layer:feed:talk",
         "urn:cap:layer:read:talk",
         "urn:cap:layer:say:talk",
@@ -107,6 +111,12 @@ class LayerDoor:
         (home / "grants.json").write_text(json.dumps(GRANTS, indent=2))
         for d in ("files", "state"):
             (root / d).mkdir()
+        # Public test identity from age's own test vectors; scratch state only.
+        # https://github.com/FiloSottile/age/blob/main/age_test.go
+        state_key = root / "layers.key"
+        state_key.write_text(
+            "AGE-SECRET-KEY-184JMZMVQH3E6U0PSL869004Y3U2NYV7R30EU99CSEDNPH02YUVFSZW44VU\n"
+        )
         argv = [
             ikigai,
             "--config-home",
@@ -119,6 +129,8 @@ class LayerDoor:
             "layers",
             "--cert-dir",
             str(door_set),
+            "--layers-key",
+            str(state_key),
             "--layers-state",
             str(root / "state"),
         ]

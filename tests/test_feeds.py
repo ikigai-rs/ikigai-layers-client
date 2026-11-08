@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ikigai_layers_client import certs, door, feed_graph, join, message
+from ikigai_layers_client import certs, door, feeds, join
 from ikigai_layers_client.cli import main
 from ikigai_layers_client.follow import read_state
 from tests.test_follow import FakeDoor, event
@@ -15,10 +15,14 @@ FEED = "releases"
 ENTRY = "urn:layer:releases:entry:1"
 PARENT = "urn:release:feature"
 CHILD = "urn:release:feature:ui"
-SCHEME = f"""@prefix skos: <{feed_graph.SKOS}> .
-<{PARENT}> a skos:Concept ; skos:prefLabel "Features" ; skos:narrower <{CHILD}> .
-<{CHILD}> a skos:Concept ; skos:prefLabel "User interface"@en ; skos:broader <{PARENT}> .
-"""
+SCHEME = {
+    "scheme": "urn:release:scheme",
+    "label": "Releases",
+    "concepts": [
+        {"@id": PARENT, "prefLabel": "Features", "notation": "1", "broader": []},
+        {"@id": CHILD, "prefLabel": "User interface", "notation": "2", "broader": [PARENT]},
+    ],
+}
 
 
 @pytest.mark.parametrize("command", ["join", "feeds", "entries", "ask"])
@@ -35,10 +39,14 @@ def answer(doc):
 
 
 def layer_definition(layer, *, feed=False, model="channel"):
-    return (
-        f"<urn:layer:{layer}> a <{message.IK}{'Feed' if feed else 'Layer'}> ; "
-        f'<{message.IK}layerModel> "{model}" .\n'
-    )
+    return {
+        "layer": layer,
+        "label": layer.title(),
+        "model": model,
+        "types": ["Layer", "Feed"] if feed else ["Layer"],
+        "feed": feed,
+        "public": feed,
+    }
 
 
 class FeedDoor(FakeDoor):
@@ -82,8 +90,10 @@ class FeedDoor(FakeDoor):
         if iri == "urn:layers:feed":
             return super().source(iri, **args)
         if iri == f"urn:layer:{FEED}:scheme":
+            assert args == {"as": "application/json"}
             return answer(SCHEME)
         if iri.startswith("urn:layer:") and iri.count(":") == 2:
+            assert args == {"as": "application/json"}
             return answer(self.definitions[iri.split(":")[2]])
         if iri == f"urn:layer:{FEED}:entries":
             nodes = [n for n in self.nodes if int(n["seq"]) > int(args["after"])]
@@ -219,7 +229,9 @@ def test_nonfeed_concept_filter_is_refused(feed_door, capsys):
 
 
 def test_scheme_cycles_terminate_and_are_named():
-    scheme = feed_graph.Scheme(SCHEME + f"<{PARENT}> <{feed_graph.SKOS}broader> <{CHILD}> .")
+    doc = json.loads(json.dumps(SCHEME))
+    doc["concepts"][0]["broader"] = [CHILD]
+    scheme = feeds.Scheme(doc)
     assert any("(cycle)" in line for line in scheme.lines())
 
 
@@ -479,41 +491,10 @@ def test_feed_entry_titles_are_shown_for_feed_specific_types(feed_door, capsys, 
     assert 'FeedEntry "Release 1"' in capsys.readouterr().out
 
 
-def test_definition_typing_is_bound_to_the_layer_subject_and_not_a_label(feed_door, capsys):
-    feed_door.definitions[FEED] = (
-        f"<urn:layer:talk> a <{message.IK}Feed> .\n"
-        f'<urn:layer:{FEED}> <{feed_graph.RDFS}label> "ik:Feed" .\n'
-    )
+def test_definition_is_bound_to_the_requested_layer(feed_door, capsys):
+    feed_door.definitions[FEED] = layer_definition("talk", feed=True)
     assert main(["feeds", FEED, "--scheme", "--name", "reader"]) == 2
-    assert "not a feed" in capsys.readouterr().err
-
-
-def test_turtle_reader_accepts_named_lists_literals_and_both_prefix_spellings():
-    doc = f"""PREFIX skos: <{feed_graph.SKOS}>
-@prefix rdfs: <{feed_graph.RDFS}> .
-<urn:a> a skos:Concept; skos:broader <urn:b>, <urn:c>;
-    skos:prefLabel "A\\nlabel"@en; rdfs:label "A"^^<urn:datatype>.
-<urn:b> a skos:Concept.
-"""
-    graph = feed_graph.triples(doc)
-    assert ("urn:a", feed_graph.SKOS + "prefLabel", "A\nlabel") in graph
-    assert ("urn:a", feed_graph.SKOS + "broader", "urn:b") in graph
-    assert ("urn:a", feed_graph.SKOS + "broader", "urn:c") in graph
-    assert ("urn:b", feed_graph.RDF_TYPE, feed_graph.SKOS + "Concept") in graph
-
-
-@pytest.mark.parametrize(
-    "doc",
-    [
-        '<urn:a> a [ <urn:p> "x" ] .',
-        "<urn:a> a <urn:b>",
-        '<urn:a> <urn:p> "unterminated',
-        "unknown:subject a <urn:a> .",
-    ],
-)
-def test_unsupported_or_invalid_turtle_is_refused(doc):
-    with pytest.raises(ValueError):
-        feed_graph.triples(doc)
+    assert "definition for layer" in capsys.readouterr().err
 
 
 def test_join_json_is_the_synchronous_answer(discovery, capsys):
@@ -566,8 +547,27 @@ def test_follow_combines_kind_and_concepts_and_validates_the_layer(feed_door, tm
 
 
 def test_feed_definitions_can_carry_boolean_and_integer_metadata(feed_door, capsys):
-    feed_door.definitions[FEED] += (
-        f"<urn:layer:{FEED}> <{message.IK}public> true ; <urn:revision> 1 .\n"
-    )
+    feed_door.definitions[FEED].update(public=True, revision=1)
     assert main(["feeds", FEED, "--name", "reader"]) == 0
     assert "feed: releases" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "changes", [{"feed": False}, {"types": ["Layer"]}, {"label": "Feed", "types": ["Layer"]}]
+)
+def test_a_feed_needs_the_json_flag_and_compact_type(feed_door, capsys, changes):
+    feed_door.definitions[FEED].update(changes)
+    assert main(["feeds", FEED, "--scheme", "--name", "reader"]) == 2
+    assert "not a feed" in capsys.readouterr().err
+
+
+def test_scheme_keeps_multiple_parents_and_empty_schemes():
+    doc = json.loads(json.dumps(SCHEME))
+    doc["concepts"].append(
+        {"@id": "urn:other", "prefLabel": "Other", "notation": "3", "broader": []}
+    )
+    doc["concepts"][1]["broader"].append("urn:other")
+    lines = feeds.Scheme(doc).lines()
+    assert sum(CHILD in line for line in lines) == 2
+    assert any("(also shown above)" in line for line in lines)
+    assert feeds.Scheme({"concepts": []}).lines() == []

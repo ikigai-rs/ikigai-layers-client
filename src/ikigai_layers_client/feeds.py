@@ -5,19 +5,23 @@ from __future__ import annotations
 import json
 import re
 
-from . import door, feed_graph, files, message, show
+from . import door, files, message, show
 
 _LAYER_IRI = re.compile(r"urn:layer:([a-z0-9-]+)\Z")
 
 
-def definition(d, layer: str) -> list[tuple[str, str, str]]:
-    """Read a layer's definition in the door's Turtle face."""
-    return feed_graph.triples(d.source(f"urn:layer:{door.layer_name(layer)}").text)
+def definition(d, layer: str) -> dict:
+    """Read the door's JSON definition, bound to the requested layer."""
+    layer = door.layer_name(layer)
+    doc = json.loads(d.source(f"urn:layer:{layer}", **{"as": "application/json"}).data)
+    if not isinstance(doc, dict) or doc.get("layer") != layer:
+        raise ValueError(f"the door did not return the definition for layer `{layer}`")
+    return doc
 
 
-def is_feed(graph, layer: str) -> bool:
-    """Whether the definition types this layer, rather than another subject, as ik:Feed."""
-    return (f"urn:layer:{layer}", feed_graph.RDF_TYPE, message.IK + "Feed") in graph
+def is_feed(doc: dict, layer: str) -> bool:
+    """Whether this layer's JSON definition identifies it as a feed."""
+    return doc.get("layer") == layer and doc.get("feed") is True and "Feed" in doc.get("types", [])
 
 
 def require_feed(d, layer: str) -> None:
@@ -72,10 +76,10 @@ def listing(d, args, say) -> int:
     if args.feed:
         require_feed(d, args.feed)
         if args.scheme:
-            answer = d.source(f"urn:layer:{args.feed}:scheme")
+            answer = d.source(f"urn:layer:{args.feed}:scheme", **{"as": "application/json"})
             if args.json:
                 raise ValueError("--scheme prints a concept tree; omit --json")
-            lines = feed_graph.Scheme(answer.text).lines()
+            lines = Scheme(json.loads(answer.data)).lines()
             say(f"scheme for {args.feed}:")
             for line in lines or ["no concepts"]:
                 say(line)
@@ -113,10 +117,7 @@ def question_layer(d, selected: str | None) -> str:
         if "say" not in verbs:
             continue
         graph = definition(d, layer)
-        if (
-            not is_feed(graph, layer)
-            and (f"urn:layer:{layer}", message.IK + "layerModel", "channel") in graph
-        ):
+        if not is_feed(graph, layer) and graph.get("model") == "channel":
             candidates.append(layer)
     if not candidates:
         raise ValueError(
@@ -141,3 +142,49 @@ def concepts(values: list[str]) -> str | None:
         if "," in value:
             raise ValueError("a concept IRI cannot contain a comma in this filter")
     return ",".join(dict.fromkeys(values)) if values else None
+
+
+class Scheme:
+    """A concept tree from the door's JSON face, with cycle and multi-parent handling."""
+
+    def __init__(self, doc: dict):
+        """Read labels and parent edges without interpreting RDF."""
+        self.labels: dict[str, str] = {}
+        self.children: dict[str, set[str]] = {}
+        self.concepts: set[str] = set()
+        for concept in doc["concepts"]:
+            iri = concept["@id"]
+            self.concepts.add(iri)
+            self.labels[iri] = concept.get("prefLabel") or iri
+            for parent in concept["broader"]:
+                self.children.setdefault(parent, set()).add(iri)
+                self.concepts.add(parent)
+
+    def lines(self) -> list[str]:
+        """An indented concept tree with labels, full IRIs, and named cycles."""
+        children = {c for group in self.children.values() for c in group}
+        roots = sorted(self.concepts - children)
+        lines, visited = [], set()
+
+        def visit(root):
+            todo = [(root, 0, frozenset())]
+            while todo:
+                concept, depth, path = todo.pop()
+                cycle, repeated = concept in path, concept in visited
+                label = self.labels.get(concept, concept)
+                suffix = " (cycle)" if cycle else " (also shown above)" if repeated else ""
+                lines.append("    " * depth + f"{label} <{concept}>" + suffix)
+                if cycle or repeated:
+                    continue
+                visited.add(concept)
+                todo.extend(
+                    (child, depth + 1, path | {concept})
+                    for child in sorted(self.children.get(concept, ()), reverse=True)
+                )
+
+        for root in roots:
+            visit(root)
+        for concept in sorted(self.concepts - visited):
+            if concept not in visited:
+                visit(concept)
+        return lines

@@ -20,3 +20,8 @@ alice-agent = ["read", "feed", "say"]
 layer = "offers"
 alice       = ["read", "feed", "out", "take"]
 alice-agent = ["read", "feed", "out", "take"]
+
+[[mount]]
+layer = "releases"
+alice = ["read", "feed"]
+alice-agent = ["read", "feed"]

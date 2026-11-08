@@ -151,11 +151,13 @@ following descriptor (relative certificate URLs resolve against the descriptor U
 `urn:cap:layer:read:NAME` and/or `urn:cap:layer:feed:NAME` capabilities for the requested
 feeds. After success, `config.toml` records the door for subsequent commands.
 
-Definitions and `urn:layer:FEED:scheme` use the door's Turtle face; the client reads
-named-node statements, prefixes, predicate/object lists, boolean/integer literals, and
-string labels with optional
-language or datatype suffixes. Unsupported Turtle syntax is refused. Definitions type
-the layer as `ik:Feed`; writable channels use `ik:layerModel "channel"`. Entries use
+Definitions and `urn:layer:FEED:scheme` use `as=application/json`; participants need
+no RDF parser. Definitions have `layer`, `label`, `model`, `types` (compact terms
+such as `"Layer"` and `"Feed"`), and boolean `feed` and `public` fields. The client
+checks the returned layer name, feed flag, and `"Feed"` type; writable non-feed
+channels have `model: "channel"`. Schemes have `scheme` (IRI), `label`, and
+`concepts`, each with `@id`, `prefLabel`, `notation`, and a `broader` array of parent
+IRIs. The concept tree retains multiple parents and names cycles. Entries use
 `application/ld+json`, with `concept=IRI,IRI` passed to the feed's `entries` endpoint.
 During following, each new entry event is checked against that same filtered endpoint,
 and the cursor also covers events that do not match.
@@ -610,16 +612,25 @@ has the offer and report shapes of ikigai-layers' own tests.
 (`tests/fixtures/layers/layers/work.*`) are a copy of an edge layer's that takes briefs, issues
 and files, with only the layer's name changed, so the door admits and refuses exactly as it does
 for a collaborator.
-CI's `interop` job builds ikigai-cli with its `quic` feature and runs it with
-`--require-interop`, where a missing binary fails instead (a newer `ikigai` needs a `--layers-key`
-that `tests/layer_door.py` does not pass yet, so those tests fail locally against it; use 0.1.62). `tests/test_onboard.py` uses an in-process fake lobby, real Python-generated certificates,
+CI's `--require-interop` test option builds a real door with
+`scripts/install-interop-door.sh`, pinning
+ikigai-cli at `3b54f02dcde4c7d5cdf06229cdcd01e80d82c0d1` and ikigai-layers at
+`3c6ae61b9d8b2572aae9eb52f63250a6f89d48da` (the merged feed JSON faces), retaining
+the CLI's transitive dependency lock. The required test run builds it before test
+collection and puts it first on `PATH`; a build failure fails the run. This supersedes
+the legacy binary installed by the workflow. Locally, use `--require-interop` (Cargo
+and curl required), or build with that script and put `.interop-build/tools/bin`
+first on `PATH`. The fixture supplies a public test age
+identity for scratch encrypted state; never use it for real state.
+`tests/test_onboard.py` uses an in-process fake lobby, real Python-generated certificates,
 and the starter's shared proof/request fixture. CI runs the full gates on Linux. The enrollment implementation avoids subprocess and symlink
 requirements for Windows and WSL2; native Windows execution has not been tested. The public-feed tests in `tests/test_feeds.py` extend the existing fake event door and
 supply a fake HTTPS descriptor, including a mismatched certificate SHA-256. They cover
 identity reuse, selected and all-feed joins, filtering with descendants, newest-entry
-pagination, scheme trees, and question routing/refusals. Feed/join interoperability
-against a real host has not been tested; the companion host must implement the wire
-contract above. No test connects anywhere but loopback.
+pagination, scheme trees, and question routing/refusals. Real-door tests exercise
+feed discovery, the exact definition JSON, scheme hierarchy rendering, and writable
+channel selection. The descriptor/join contract above remains tested with a fake host;
+the companion host must implement it. No test connects anywhere but loopback.
 
 ## Accessibility
 

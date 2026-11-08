@@ -1,0 +1,8 @@
+model = "channel"
+label = "Releases"
+shapes = "talk.shapes.ttl"
+context = "talk.context.jsonld"
+feed = true
+public = true
+publishers = ["alice"]
+scheme = "releases.scheme.ttl"
