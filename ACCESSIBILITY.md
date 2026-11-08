@@ -24,6 +24,11 @@ All of it is terminal text from `src/ikigai_layers_client/`:
 - **Enrollment** (`onboard.py`, on stdout): `onboard` labels the fingerprint, request,
   approval status, retry delay in seconds, granted capability IRIs, and saved configuration.
   Pending approval exits 3 and says to run again; revocation is a named refusal on stderr.
+- **Public feeds** (`join.py`, `feeds.py`): `join` labels the identity fingerprint, granted capability IRIs and the
+  saved configuration; `feeds` labels each feed, indents its newest entry, and says when
+  there are no feeds or entries. `feeds FEED --scheme` prints a labeled concept tree with
+  full IRIs and cycles named in words. `ask` prints its posted question's IRI or a refusal
+  naming the missing writable channel or required `--layer` selection.
 - **Entries** (`show.py`): `read` prints a header line per entry (sequence number, time, author,
   kind, IRI), then what its kind needs indented four spaces: a message's text, a brief's or an
   issue's title, severity, repository and body, a file's name, size, media type and digest with
@@ -88,6 +93,9 @@ the text inside an entry, which is whatever its author posted.
 - `tests/test_onboard.py` checks that pending approval and enrollment are named, local
   refusals keep the `ikigai-layers: ` prefix, and pairing codes and private keys stay out of
   output. These tests run on Linux in CI; native Windows output has not been evaluated.
+- `tests/test_feeds.py` pins public feed labels, concept-tree indentation, join pin
+  refusals, question destination refusals, and the absence of private keys in join output.
+  These use a fake door and descriptor, with no assistive technology evaluation.
 - **No automated accessibility checker, browser or assistive technology has been used on this
   output.** No screen reader or braille display has read the command's output.
 
@@ -127,3 +135,4 @@ technology, if you are comfortable sharing them. Anything security-sensitive goe
 | 2026-10-31 | First version. |
 | 2026-11-02 | Added lobby enrollment status output and its tests. |
 | 2026-11-03 | Added the `work` agent loop's lines, refusals and tests, with its stop file's lines and its refusal of a prompt passed to a shell. |
+| 2026-11-08 | Added public feed joining, listings, scheme trees and question routing, with fake-door output and refusal tests. |

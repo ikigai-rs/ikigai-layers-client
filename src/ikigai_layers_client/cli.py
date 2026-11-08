@@ -2,6 +2,9 @@
 
     ikigai-layers cert generate --dir DIR        one actor's client identity (no server key)
     ikigai-layers onboard --door URL --pin SHA256 --invite ID --code CODE
+    ikigai-layers join [HTTPS_HOST] [FEED …]    join public read-only feeds without an invite
+    ikigai-layers feeds [FEED] [--scheme]       readable feeds, newest entries, concept tree
+    ikigai-layers ask ENTRY [TEXT|-]            ask about a feed entry in your own channel
     ikigai-layers me                             who the door says this actor is
     ikigai-layers say LAYER [TEXT|-]             say one message (stdin with - or no TEXT)
     ikigai-layers post brief LAYER [FILE|-]      post a brief (Markdown; --title, --repo)
@@ -39,7 +42,7 @@ from pathlib import Path
 import ikigai
 from ikigai import quic
 
-from . import __version__, certs, door, files, follow, message, onboard, show, work
+from . import __version__, certs, door, feeds, files, follow, join, message, onboard, show, work
 
 EXIT_DOOR_ERROR = 1
 EXIT_USAGE = 2
@@ -92,6 +95,7 @@ def _parser() -> argparse.ArgumentParser:
     commands = top.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     onboard.add_parser(commands)
+    join.add_parser(commands)
     work.add_parser(commands)
 
     cert = commands.add_parser("cert", help="certificates")
@@ -109,6 +113,19 @@ def _parser() -> argparse.ArgumentParser:
     generate.add_argument("--force", action="store_true", help="replace an existing pair")
 
     commands.add_parser("me", parents=[connection], help="who the door says this actor is")
+
+    feed = commands.add_parser(
+        "feeds", parents=[connection], help="readable feeds and newest entries"
+    )
+    feed.add_argument("feed", nargs="?", help="one feed (default: all readable feeds)")
+    feed.add_argument("--scheme", action="store_true", help="print the feed's SKOS concept tree")
+
+    ask = commands.add_parser(
+        "ask", parents=[connection], help="ask about a feed entry in your own channel"
+    )
+    ask.add_argument("entry", help="the feed entry IRI (urn:layer:FEED:entry:ID)")
+    ask.add_argument("text", nargs="?", default="-", help="the question; - (default) reads stdin")
+    ask.add_argument("--layer", help="your writable non-feed channel, when several are available")
 
     thread_args = argparse.ArgumentParser(add_help=False)
     thread_args.add_argument("--in-reply-to", metavar="ENTRY", help="the entry this answers")
@@ -180,10 +197,19 @@ def _parser() -> argparse.ArgumentParser:
     )
 
     kind_help = f"only these kinds, comma-separated ({', '.join(message.KINDS)})"
-    read = commands.add_parser("read", parents=[connection], help="read a layer's entries")
+    read = commands.add_parser(
+        "read", aliases=["entries"], parents=[connection], help="read a layer's entries"
+    )
     read.add_argument("layer")
     read.add_argument("--after", type=int, default=0, help="entries after this sequence number")
     read.add_argument("--kind", help=kind_help)
+    read.add_argument(
+        "--concept",
+        action="append",
+        default=[],
+        metavar="IRI",
+        help="a feed concept and its descendants (repeatable)",
+    )
 
     fol = commands.add_parser(
         "follow",
@@ -212,6 +238,13 @@ def _parser() -> argparse.ArgumentParser:
         help="set LAYER's cursor back to 0 (after a restored door), then follow",
     )
     fol.add_argument("--kind", help=kind_help + "; other events are skipped")
+    fol.add_argument(
+        "--concept",
+        action="append",
+        default=[],
+        metavar="IRI",
+        help="a feed concept and its descendants (repeatable; feed layers only)",
+    )
     fol.add_argument(
         "--plain",
         action="store_true",
@@ -289,6 +322,26 @@ def cmd_me(d: door.Door, args) -> int:
     me = json.loads(answer.data)
     _out(json.dumps(me, indent=2, sort_keys=True))
     return 0
+
+
+def cmd_feeds(d: door.Door, args) -> int:
+    """List feeds or show their concept scheme."""
+    return feeds.listing(d, args, _out)
+
+
+def cmd_ask(d: door.Door, args) -> int:
+    """Post a question about a readable feed entry to the caller's own channel."""
+    feed = _entry_layer(args.entry)
+    feeds.require_feed(d, feed)
+    doc = json.loads(d.source(args.entry, **{"as": "application/ld+json"}).data)
+    if not any(n.get("@id") == args.entry for n in doc.get("@graph", [])):
+        raise Usage(f"the door did not return feed entry {args.entry}")
+    args.layer = feeds.question_layer(d, args.layer)
+    turtle = message.entry(
+        "Question",
+        [f"ik:body {message.literal(args.text)}", f"dcterms:subject {message.iri(args.entry)}"],
+    )
+    return _say(d, args, turtle)
 
 
 def cmd_say(d: door.Door, args) -> int:
@@ -499,8 +552,13 @@ def cmd_read(d: door.Door, args) -> int:
     shows indented (:mod:`show`); ``--json`` lists them with any file content elided."""
     layer = door.layer_name(args.layer)
     kinds = _kinds(args.kind)
+    concept = feeds.concepts(args.concept)
+    if concept:
+        feeds.require_feed(d, layer)
     # One kind is filtered at the door (`type=`, an exact class); several here.
     by_type = {"type": message.IK + next(iter(kinds))} if kinds and len(kinds) == 1 else {}
+    if concept:
+        by_type["concept"] = concept
     after, listed, context = args.after, [], None
     while True:
         answer = d.source(
@@ -523,7 +581,10 @@ def cmd_read(d: door.Door, args) -> int:
                     _out(line)
         if len(page) < PAGE:
             break
-        after = max(int(files.one(n.get("seq"))) for n in page)
+        next_after = max(int(files.one(n.get("seq"))) for n in page)
+        if next_after <= after:
+            raise Usage(f"layer `{layer}` returned entries without advancing its sequence")
+        after = next_after
     if args.json:
         _out(json.dumps({"@context": context or {}, "@graph": listed}))
     return 0
@@ -592,6 +653,7 @@ def cmd_follow(args, cert_dir: Path) -> int:
         backoff=args.backoff,
         describe=not args.plain,
         kinds=_kinds(args.kind),
+        concepts=feeds.concepts(args.concept),
     )
     try:
         return follower.run(
@@ -607,6 +669,9 @@ COMMANDS = {
     "post": cmd_post,
     "save": cmd_save,
     "read": cmd_read,
+    "entries": cmd_read,
+    "feeds": cmd_feeds,
+    "ask": cmd_ask,
     "tuples": cmd_tuples,
     "out": cmd_out,
     "take": cmd_take,
@@ -619,6 +684,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "cert":
             return cmd_cert_generate(args)
+        if args.command == "join":
+            return join.run(args, _out)
         if args.command == "onboard":
             return onboard.run(args, _out)
         cert_dir = _cert_dir(args)
@@ -640,7 +707,22 @@ def main(argv: list[str] | None = None) -> int:
             if args.repo is not None:
                 message.repository(args.repo)
             args.prepared = _titled_body(args, args.post_kind)
-        if args.command in ("read", "follow"):
+        if args.command == "ask":
+            _entry_layer(args.entry)
+            message.iri(args.entry)
+            if args.text == "-":
+                args.text = _read_input("-", "the question").rstrip("\n")
+            if not args.text.strip():
+                raise Usage("the question is empty")
+        if args.command == "feeds":
+            if args.feed:
+                door.layer_name(args.feed)
+            if args.scheme and not args.feed:
+                raise Usage("name a feed: feeds FEED --scheme")
+            if args.scheme and args.json:
+                raise Usage("--scheme prints a concept tree; omit --json")
+        if args.command in ("read", "entries", "follow"):
+            feeds.concepts(args.concept)
             _kinds(args.kind)
         quic.parse_door(args.door)
         if args.command == "follow":

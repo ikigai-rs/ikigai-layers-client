@@ -79,6 +79,10 @@ class Door:
         """Delete at ``iri`` (a take, for a tuplespace)."""
         return self.client.delete(routed(iri), **args)
 
+    def entries(self):
+        """The door's capability-scoped catalog, used to discover this identity's layers."""
+        return self.client.entries()
+
     def close(self) -> None:
         """Close the connection."""
         self.client.close()

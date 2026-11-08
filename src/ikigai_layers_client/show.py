@@ -57,6 +57,9 @@ def summary(node: dict) -> str:
             f"File {one(node.get('fileName'))} {one(node.get('byteSize'))} bytes "
             f"{one(node.get('mediaType'))} {digest[:19]}…"
         )
+    title = one(node.get("title"))
+    if title is not None:
+        return f"{k} {_quoted(title)}"
     body = one(node.get("body"))
     return f"{k} {_quoted(body, PREVIEW)}" if body is not None else k
 
@@ -92,7 +95,7 @@ def lines(node: dict) -> list[str]:
         out.append(f"    digest: {one(node.get('contentHash'))}")
         out.append(f"    save it with: ikigai-layers save {entry_id}")
         return out
-    if k in ("Brief", "Issue"):
+    if k in ("Brief", "Issue") or one(node.get("title")) is not None:
         out.append(f"    title: {one(node.get('title'))}")
         level = one(node.get("severity"))
         if level:
