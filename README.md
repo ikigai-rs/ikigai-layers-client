@@ -152,7 +152,8 @@ following descriptor (relative certificate URLs resolve against the descriptor U
 feeds. After success, `config.toml` records the door for subsequent commands.
 
 Definitions and `urn:layer:FEED:scheme` use the door's Turtle face; the client reads
-named-node statements, prefixes, predicate/object lists, and string labels with optional
+named-node statements, prefixes, predicate/object lists, boolean/integer literals, and
+string labels with optional
 language or datatype suffixes. Unsupported Turtle syntax is refused. Definitions type
 the layer as `ik:Feed`; writable channels use `ik:layerModel "channel"`. Entries use
 `application/ld+json`, with `concept=IRI,IRI` passed to the feed's `entries` endpoint.

@@ -563,3 +563,11 @@ def test_follow_combines_kind_and_concepts_and_validates_the_layer(feed_door, tm
         == 2
     )
     assert "not a feed" in capsys.readouterr().err
+
+
+def test_feed_definitions_can_carry_boolean_and_integer_metadata(feed_door, capsys):
+    feed_door.definitions[FEED] += (
+        f"<urn:layer:{FEED}> <{message.IK}public> true ; <urn:revision> 1 .\n"
+    )
+    assert main(["feeds", FEED, "--name", "reader"]) == 0
+    assert "feed: releases" in capsys.readouterr().out

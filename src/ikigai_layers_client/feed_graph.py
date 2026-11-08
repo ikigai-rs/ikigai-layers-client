@@ -1,8 +1,8 @@
 """Read the named-node Turtle face used by layer definitions and SKOS schemes.
 
 This is deliberately a small wire reader, not a general RDF engine. It accepts named
-subjects, prefix declarations, predicate/object lists and string literals, including
-language and datatype suffixes. Unsupported syntax is refused, never silently ignored.
+subjects, prefix declarations, predicate/object lists, boolean/integer literals and strings
+with language and datatype suffixes. Unsupported syntax is refused, never silently ignored.
 """
 
 from __future__ import annotations
@@ -82,6 +82,8 @@ def triples(text: str) -> list[tuple[str, str, str]]:
                     elif pos < len(tokens) and tokens[pos] == "^^":
                         take()
                         named(take())
+                elif obj in ("true", "false") or re.fullmatch(r"[+-]?[0-9]+", obj):
+                    value = obj
                 else:
                     value = named(obj)
                 result.append((subject, predicate, value))
