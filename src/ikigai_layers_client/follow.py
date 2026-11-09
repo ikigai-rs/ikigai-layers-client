@@ -18,7 +18,9 @@ file's name, size and digest; never a file's content), read from the entry itsel
 Issue major "Crash on start"
 
 ``kinds`` keeps only entries of those kinds (``Brief``, ``Issue``, …); everything else is
-read past without a line, and the cursor still advances over it.
+read past without a line, and the cursor still advances over it. ``concepts`` selects
+feed entries using the door's ``entries concept=`` filter, including descendants in its
+current scheme; excluded events also advance the cursor.
 
 The cursor vector (``talk:7,tasks:40``) is kept in a state file written atomically
 AFTER the lines it covers are printed: a crash between the two replays an event (harmless)
@@ -49,7 +51,7 @@ from collections.abc import Callable
 import ikigai
 from ikigai import quic
 
-from . import show
+from . import feeds, show
 
 MAX_WAIT = 60  # the door's MAX_WAIT_SECS: a larger wait= is refused there
 CALL_SLACK = 30  # seconds past `wait` before a call that has not answered is abandoned
@@ -162,11 +164,13 @@ class Follower:
         backoff: float = 5.0,
         describe: bool = False,
         kinds: set[str] | None = None,
+        concepts: str | None = None,
     ):
         """``wait`` is each read's long poll in seconds (1..60); ``backoff`` the first retry
         delay after a failed read, doubling to :data:`BACKOFF_MAX`. ``describe`` adds each
         new entry's kind and summary to its line; ``kinds`` prints only entries of those
-        kinds (either reads each new entry once)."""
+        kinds (either reads each new entry once). ``concepts`` is the comma-separated feed
+        concept filter; the door expands descendants and only matching entries are shown."""
         self._connect = connect
         self._door = None
         self.layers = layers
@@ -177,6 +181,7 @@ class Follower:
         self.backoff = backoff
         self.describe = describe
         self.kinds = kinds
+        self.concepts = concepts
         self.cursor: dict[str, int] = {}
 
     def read(
@@ -191,6 +196,9 @@ class Follower:
                 # The connection's timeout applies to every call, including long polls
                 # after the one-second --from-now history reads.
                 self._door = self._connect(max(self.wait, wait) + CALL_SLACK)
+                if self.concepts:
+                    for layer in self.layers:
+                        feeds.require_feed(self._door, layer)
             answer = self._door.source(
                 "urn:layers:feed",
                 after=format_cursor(cursor),
@@ -212,13 +220,34 @@ class Follower:
             ]
         except (ValueError, KeyError, TypeError) as e:
             raise Refused("refused", f"the door's feed answer is not the JSON face: {e}") from e
-        read_entries = entries and (self.describe or self.kinds is not None)
+        read_entries = entries and (self.describe or self.kinds is not None or self.concepts)
         out = []
         for layer, seq, line, event_kind, iri in events:
             if not read_entries or event_kind != "say" or seq <= cursor.get(layer, 0):
                 out.append((layer, seq, line, None))
                 continue
-            node = self._entry(iri)
+            if self.concepts:
+                try:
+                    answer = self._door.source(
+                        f"urn:layer:{layer}:entries",
+                        after=str(seq - 1),
+                        limit="1",
+                        concept=self.concepts,
+                        **{"as": "application/ld+json"},
+                    )
+                    nodes = json.loads(answer.data)["@graph"]
+                    node = next((n for n in nodes if n.get("@id") == iri), None)
+                except Exception as e:
+                    if isinstance(e, (ValueError, KeyError, TypeError)):
+                        raise Refused(
+                            "refused", "the door's filtered entries are not a JSON-LD graph"
+                        ) from e
+                    raise classify(e) from e
+                if node is None:
+                    out.append((layer, seq, line, None))
+                    continue
+            else:
+                node = self._entry(iri)
             if self.describe:
                 line = f"{line} {show.summary(node)}"
             out.append((layer, seq, line, show.kind(node)))
@@ -305,7 +334,9 @@ class Follower:
             for layer, seq, line, kind in events:
                 if layer not in self.layers or seq <= self.cursor[layer]:
                     continue  # a replay, or a layer this follower did not ask for
-                if self.kinds is None or kind in self.kinds:
+                if (not self.concepts or kind is not None) and (
+                    self.kinds is None or kind in self.kinds
+                ):
                     self.say(line)
                 self.cursor[layer] = seq
                 advanced = True

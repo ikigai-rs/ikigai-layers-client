@@ -70,6 +70,98 @@ These commands offer and take task tuples by hand; [`work`](#running-an-agent-on
 runs an agent on them for you. For doors without a lobby, use the manual certificate exchange
 below.
 
+## Public read-only feeds
+
+A door that offers public feed joining needs no invite or controller approval. Start with
+an HTTPS host and a new named certificate set:
+
+```sh
+ikigai-layers join https://ikigai-rs.dev --name reader
+ikigai-layers join https://ikigai-rs.dev releases features --name reader
+ikigai-layers feeds --name reader
+ikigai-layers feeds releases --scheme --name reader
+ikigai-layers entries releases --concept urn:release:feature --name reader
+ikigai-layers follow --layers releases --concept urn:release:feature --name reader
+```
+
+The host defaults to `https://ikigai-rs.dev`; `join releases --name reader` selects one
+feed there, and `join --name reader` selects every advertised public read-only feed.
+The actor name defaults to the machine's short host name; `--cert-dir DIR` selects an
+explicit directory. Joining generates a client pair only when neither file exists and
+reuses a complete, matching pair. A partial pair is refused. A different saved door or
+server certificate is refused with instructions to use a separate name. There is no
+implicit replacement of an existing identity or pin.
+
+Discovery uses system-trusted HTTPS, including HTTPS-only redirects, to fetch
+`/.well-known/ikigai/layers.json`. The client checks the advertised server certificate's
+SHA-256 **over its DER bytes**, the same fingerprint convention as `onboard --pin`,
+before generating an identity or opening QUIC. It then posts one `onb:JoinRequest` to
+the advertised lobby and prints the identity fingerprint and the synchronous answer's
+granted capability IRIs.
+Only advertised public read-only layers typed `ik:Feed` may be requested; a response
+that grants writes or unrelated layers is refused. The private key stays local.
+Public feed membership needs no roster read: `feeds` discovers readable layers from
+the door's capability-scoped catalog and their definitions.
+
+`feeds` shows each feed with its newest entry, or says `no entries`. `feeds FEED --scheme`
+prints its SKOS concept tree with labels and full IRIs. A concept with several parents
+can appear under each; cycles are labeled. Both `entries` (an alias of `read`) and
+`follow` accept repeatable `--concept IRI` options. The selections are combined as a
+union, each including every descendant in the layer's current SKOS scheme. The door
+applies the filter; this client does not keep a second scheme cache. `--kind` can narrow
+the result further. Filters are refused on non-feed layers. `follow --plain` still
+filters but omits entry descriptions. Its cursor advances past excluded events, just
+as with `--kind`; use a separate `--state FILE` or `--reset FEED` to replay with a different
+filter. Listing the newest entry pages through the feed's entries.
+
+To ask about a feed entry, use a certificate that also has its own writable Talk channel:
+
+```sh
+ikigai-layers ask urn:layer:releases:entry:EXAMPLE 'What changed for me?' --name me
+printf '%s\n' 'Does this affect our setup?' | ikigai-layers ask urn:layer:releases:entry:EXAMPLE - --name me
+```
+
+`ask` checks the readable entry belongs to a feed, then posts an `ik:Question` with
+`dcterms:subject` naming that entry into the caller's sole writable non-feed channel.
+When several qualify, choose `--layer NAME`; a feed, tuplespace, or ungranted channel
+cannot be selected. A joined public reader with no writable channel gets a named refusal
+and nothing is posted. The destination channel's shapes must admit questions with
+`dcterms:subject`.
+
+### Discovery and join wire contract
+
+The open-join host and feed-layer support are companion work. These commands expect the
+following descriptor (relative certificate URLs resolve against the descriptor URL):
+
+```json
+{
+  "door": "quic://example.org:4434",
+  "server_cert": {"url": "server.crt", "sha256": "64 hexadecimal digits"},
+  "join": "urn:layer:join:say",
+  "public_layers": [
+    {"name": "releases", "type": "ik:Feed", "read_only": true}
+  ]
+}
+```
+
+`type` also accepts `https://ikigai-rs.dev/ns#Feed`. Discovery and certificate reads have
+30-second timeouts and a 1 MiB size limit. The request is Turtle with type
+`onb:JoinRequest`, `onb:certificate` (client PEM), `onb:fingerprint`, and one or more
+`onb:layer` IRIs. The lobby answers JSON with `granted`, an array of
+`urn:cap:layer:read:NAME` and/or `urn:cap:layer:feed:NAME` capabilities for the requested
+feeds. After success, `config.toml` records the door for subsequent commands.
+
+Definitions and `urn:layer:FEED:scheme` use `as=application/json`; participants need
+no RDF parser. Definitions have `layer`, `label`, `model`, `types` (compact terms
+such as `"Layer"` and `"Feed"`), and boolean `feed` and `public` fields. The client
+checks the returned layer name, feed flag, and `"Feed"` type; writable non-feed
+channels have `model: "channel"`. Schemes have `scheme` (IRI), `label`, and
+`concepts`, each with `@id`, `prefLabel`, `notation`, and a `broader` array of parent
+IRIs. The concept tree retains multiple parents and names cycles. Entries use
+`application/ld+json`, with `concept=IRI,IRI` passed to the feed's `entries` endpoint.
+During following, each new entry event is checked against that same filtered endpoint,
+and the cursor also covers events that do not match.
+
 ## Getting started (macOS, or Ubuntu on WSL2; Python 3.11 or newer)
 
 What you will end up with: one certificate set per actor (you, and your Claude), each enrolled
@@ -423,7 +515,7 @@ codes below hold.
 
 ## Commands
 
-Commands other than `cert generate` and `onboard` reach the door with one actor's set: `--name NAME` for
+Commands other than `cert generate`, `onboard` and `join` reach the door with one actor's set: `--name NAME` for
 `~/.ikigai/layers-client/NAME`, or `--cert-dir DIR`. `--door` defaults to
 the enrolled set's saved door, otherwise
 `quic://ikigai-rs.dev:4434`. `--json` prints the door's JSON answer as it came.
@@ -432,14 +524,17 @@ the enrolled set's saved door, otherwise
 | --- | --- |
 | `cert generate --name NAME` (or `--dir DIR`) | write `client.crt` and `client.key` and print the fingerprint; refuses to overwrite without `--force` |
 | `onboard --door URL --pin SHA256 --invite ID --code CODE` | generate an identity, pin the lobby, request enrollment, poll approval, and save config; `--server-cert FILE`, `--name NAME`, `--once` |
+| `join [HTTPS_HOST] [FEED …]` | join advertised public read-only feeds with no invite; `--name NAME` or `--cert-dir DIR` |
+| `feeds [FEED] [--scheme]` | readable feeds with newest entries, or a feed's SKOS concept tree |
+| `ask ENTRY [TEXT\|-] [--layer NAME]` | ask about a feed entry in your own writable non-feed channel |
 | `me` | who the door says this actor is (`urn:layers:me`) |
 | `say LAYER [TEXT\|-]` | say one `ik:Message` (stdin with `-` or no TEXT; a trailing newline is dropped); `--question` asks it; `--in-reply-to ENTRY`, `--supersedes ENTRY` |
 | `post brief LAYER [FILE\|-]` | post an `ik:Brief`: `--title` (default: the first `# ` heading), `--repo owner/name` |
 | `post issue LAYER [FILE\|-]` | post an `ik:Issue`: `--title`, `--repo`, `--severity critical\|major\|minor\|info` |
 | `post file LAYER PATH` | post an `ik:File` (text or base64; digest and size); refused here when over the layer's bound |
 | `save ENTRY [PATH]` | write a file entry's bytes to disk (default: your downloads directory) after checking its size and digest; `--as NAME` to save under another name; `--force` to replace an existing file |
-| `read LAYER [--after N] [--kind K,…]` | the entries after sequence number N, every page: a header line each, then what its kind shows |
-| `follow [--layers L,…] [--from-now] [--kind K,…]` | one line per event, for a Monitor, with each entry's kind and title (`--plain` without; `--once`, `--reset LAYER`, `--state FILE`, `--wait S`) |
+| `read LAYER [--after N] [--kind K,…] [--concept IRI]` (alias `entries`) | the entries after sequence number N, every page: a header line each, then what its kind shows |
+| `follow [--layers L,…] [--from-now] [--kind K,…] [--concept IRI]` | one line per event, for a Monitor, with each entry's kind and title (`--plain` without; `--once`, `--reset LAYER`, `--state FILE`, `--wait S`) |
 | `tuples LAYER [--taken]` | a task layer's pending tuples (`seq created subject dropper`), or the receipts of takes |
 | `out LAYER [FILE\|-]` | drop one tuple (Turtle or JSON-LD, its subject under the layer's IRI); prints the subject |
 | `take LAYER SUBJECT` | take one tuple, atomically; a second taker is told who won |
@@ -473,6 +568,10 @@ else.
 | 6 | `released …`, `report owed …` (`work run --once`) | the offer was taken and not handed back; the lines before it say why |
 | 4 | `refused: the door says this certificate is … and the configuration's actor is …` (`work`) | use the agent's own set, or correct `actor` |
 | 4 | `refused: … is readable by others`, `refused: the loop does not run as root` (`work`) | fix the key's mode, or run as the agent's account |
+| 2 | `no writable non-feed channel for this identity` (`ask`) | use an identity granted its own Talk channel; public feed joining grants reading only |
+| 2 | `several writable channels: …; choose --layer LAYER` (`ask`) | select your destination channel explicitly |
+| 2 | `… differs: kept it; use a separate --name for this door` (`join`) | keep this identity's pin and use another named set |
+| 4 | `refused: server.crt does not match the descriptor sha256: nothing was sent` (`join`) | get a corrected discovery descriptor and server certificate from the operator |
 | 2 | a usage problem, or a file in your set: `…/server.crt is missing: it should hold the door's certificate` | fix the named file or argument |
 | 2 | `[agent] command passes {prompt} to sh, which would run an offer's text as shell commands` (`work`) | leave `{prompt}` out to get the prompt on stdin, or use `{prompt_file}` |
 | 4 | `refused: … does not match --pin: nothing was sent` | get the door certificate and fingerprint from the operator again |
@@ -513,11 +612,25 @@ has the offer and report shapes of ikigai-layers' own tests.
 (`tests/fixtures/layers/layers/work.*`) are a copy of an edge layer's that takes briefs, issues
 and files, with only the layer's name changed, so the door admits and refuses exactly as it does
 for a collaborator.
-CI's `interop` job builds ikigai-cli with its `quic` feature and runs it with
-`--require-interop`, where a missing binary fails instead (a newer `ikigai` needs a `--layers-key`
-that `tests/layer_door.py` does not pass yet, so those tests fail locally against it; use 0.1.62). `tests/test_onboard.py` uses an in-process fake lobby, real Python-generated certificates,
+CI's `--require-interop` test option builds a real door with
+`scripts/install-interop-door.sh`, pinning
+ikigai-cli at `3b54f02dcde4c7d5cdf06229cdcd01e80d82c0d1` and ikigai-layers at
+`3c6ae61b9d8b2572aae9eb52f63250a6f89d48da` (the merged feed JSON faces), retaining
+the CLI's transitive dependency lock. The required test run builds it before test
+collection and puts it first on `PATH`; a build failure fails the run. This supersedes
+the legacy binary installed by the workflow. Locally, use `--require-interop` (Cargo
+and curl required), or build with that script and put `.interop-build/tools/bin`
+first on `PATH`. The fixture supplies a public test age
+identity for scratch encrypted state; never use it for real state.
+`tests/test_onboard.py` uses an in-process fake lobby, real Python-generated certificates,
 and the starter's shared proof/request fixture. CI runs the full gates on Linux. The enrollment implementation avoids subprocess and symlink
-requirements for Windows and WSL2; native Windows execution has not been tested. No test connects anywhere but loopback.
+requirements for Windows and WSL2; native Windows execution has not been tested. The public-feed tests in `tests/test_feeds.py` extend the existing fake event door and
+supply a fake HTTPS descriptor, including a mismatched certificate SHA-256. They cover
+identity reuse, selected and all-feed joins, filtering with descendants, newest-entry
+pagination, scheme trees, and question routing/refusals. Real-door tests exercise
+feed discovery, the exact definition JSON, scheme hierarchy rendering, and writable
+channel selection. The descriptor/join contract above remains tested with a fake host;
+the companion host must implement it. No test connects anywhere but loopback.
 
 ## Accessibility
 

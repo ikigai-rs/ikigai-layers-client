@@ -1,0 +1,6 @@
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+<urn:release:scheme> a skos:ConceptScheme ; rdfs:label "Releases" .
+<urn:release:feature> a skos:Concept ; skos:prefLabel "Features" ; skos:notation "1" .
+<urn:release:feature:ui> a skos:Concept ; skos:prefLabel "User interface" ;
+    skos:notation "1.1" ; skos:broader <urn:release:feature> .

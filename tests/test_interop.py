@@ -16,7 +16,7 @@ import time
 import pytest
 
 from ikigai_layers_client import door as door_mod
-from ikigai_layers_client import work
+from ikigai_layers_client import feeds, work
 from ikigai_layers_client.cli import main
 from tests.layer_door import LayerDoor, require_ikigai
 from tests.test_agent_loop import (  # noqa: F401 - `world` is a fixture
@@ -57,6 +57,41 @@ def test_the_door_accepts_a_python_made_certificate_once_enrolled(door, capsys):
     assert me["collaborations"] == ["urn:collab:demo"]
     # The door's banner lists the actor's certificate by its short fingerprint.
     assert door.fingerprints["alice"][:16] in door.log
+
+
+def test_feed_discovery_and_question_channel_selection_on_the_real_catalog(door, capsys):
+    code, out, err = run(capsys, "feeds", *door.args("alice"))
+    assert code == 0, err
+    assert out.strip() == "feed: releases\n    no entries"
+    with door_mod.connect(door.url, door.actors["alice"]) as connected:
+        layers = feeds.catalog(connected)
+        assert layers["talk"] == {"read", "say"}
+        assert layers["tasks"] == {"read"}
+        assert feeds.question_layer(connected, "talk") == "talk"
+        with pytest.raises(ValueError, match="several writable channels"):
+            feeds.question_layer(connected, None)
+
+
+def test_the_real_feed_definition_and_scheme_have_json_faces(door, capsys):
+    with door_mod.connect(door.url, door.actors["alice"]) as connected:
+        doc = feeds.definition(connected, "releases")
+        assert doc == {
+            "layer": "releases",
+            "label": "Releases",
+            "model": "channel",
+            "types": ["Layer", "Feed"],
+            "feed": True,
+            "public": True,
+        }
+        assert feeds.is_feed(doc, "releases")
+        assert feeds.definition(connected, "talk")["model"] == "channel"
+    code, out, err = run(capsys, "feeds", "releases", "--scheme", *door.args("alice-agent"))
+    assert code == 0, err
+    assert out.splitlines() == [
+        "scheme for releases:",
+        "Features <urn:release:feature>",
+        "    User interface <urn:release:feature:ui>",
+    ]
 
 
 def test_the_same_set_works_with_the_rust_cli_unchanged(door):
