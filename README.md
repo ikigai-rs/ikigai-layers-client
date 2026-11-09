@@ -612,15 +612,15 @@ has the offer and report shapes of ikigai-layers' own tests.
 (`tests/fixtures/layers/layers/work.*`) are a copy of an edge layer's that takes briefs, issues
 and files, with only the layer's name changed, so the door admits and refuses exactly as it does
 for a collaborator.
-CI's `--require-interop` test option builds a real door with
-`scripts/install-interop-door.sh`, pinning
-ikigai-cli at `3b54f02dcde4c7d5cdf06229cdcd01e80d82c0d1` and ikigai-layers at
-`3c6ae61b9d8b2572aae9eb52f63250a6f89d48da` (the merged feed JSON faces), retaining
-the CLI's transitive dependency lock. The required test run builds it before test
-collection and puts it first on `PATH`; a build failure fails the run. This supersedes
-the legacy binary installed by the workflow. Locally, use `--require-interop` (Cargo
-and curl required), or build with that script and put `.interop-build/tools/bin`
-first on `PATH`. The fixture supplies a public test age
+CI's `--require-interop` test option installs the published ikigai-cli 0.4.1
+(with ikigai-layers 0.9.0) using `scripts/install-interop-door.sh`:
+`cargo install --locked ikigai-cli --version 0.4.1 --features quic`.
+The required test run installs it before test collection and puts
+`.interop-build/tools/bin` first on `PATH`; an install failure fails the run.
+The binary is reused only while the install script's SHA-256 matches its saved stamp.
+This supersedes the legacy binary installed by the workflow. Locally, use
+`--require-interop` (Cargo required), or install with that script and put
+`.interop-build/tools/bin` first on `PATH`. The fixture supplies a public test age
 identity for scratch encrypted state; never use it for real state.
 `tests/test_onboard.py` uses an in-process fake lobby, real Python-generated certificates,
 and the starter's shared proof/request fixture. CI runs the full gates on Linux. The enrollment implementation avoids subprocess and symlink
@@ -629,8 +629,11 @@ supply a fake HTTPS descriptor, including a mismatched certificate SHA-256. They
 identity reuse, selected and all-feed joins, filtering with descendants, newest-entry
 pagination, scheme trees, and question routing/refusals. Real-door tests exercise
 feed discovery, the exact definition JSON, scheme hierarchy rendering, and writable
-channel selection. The descriptor/join contract above remains tested with a fake host;
-the companion host must implement it. No test connects anywhere but loopback.
+channel selection. Open-join interop tests serve a descriptor and the real door's
+certificate over trusted loopback HTTPS, join a fresh identity through a
+`join = "public"` lobby, and read a published public-feed entry using the saved
+configuration. They check both all-feed and selected-feed joins and that the joined
+reader cannot write or read a private channel. No test connects anywhere but loopback.
 
 ## Accessibility
 

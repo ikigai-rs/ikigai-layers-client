@@ -19,6 +19,8 @@ import time
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from ikigai_layers_client import certs
 
@@ -33,6 +35,7 @@ GRANTS = {
         "urn:cap:collab:read:demo",
         "urn:cap:layer:read:releases",
         "urn:cap:layer:feed:releases",
+        "urn:cap:layer:say:releases",
         "urn:cap:layer:feed:talk",
         "urn:cap:layer:feed:tasks",
         "urn:cap:layer:out:tasks",
@@ -78,7 +81,7 @@ def require_ikigai(request) -> str:
 class LayerDoor:
     """The door, plus one cert set per actor under :attr:`actors` (``name -> dir``)."""
 
-    def __init__(self, ikigai: str, root: Path, *, unenrolled=("outsider",)):
+    def __init__(self, ikigai: str, root: Path, *, unenrolled=("outsider",), public_join=False):
         self.root = root
         door_set = root / "door"
         done = subprocess.run(
@@ -92,6 +95,21 @@ class LayerDoor:
         (door_set / "clients").mkdir()
         home = root / "home"
         shutil.copytree(FIXTURES, home)
+        # The join fixtures are copied from ikigai-layers 0.9.0's onboard/layers/.
+        # Keep the ordinary door closed to unknown certificates for its refusal tests.
+        if public_join:
+            key = ed25519.Ed25519PrivateKey.generate()
+            (home / "join.pem").write_bytes(
+                key.private_bytes(
+                    serialization.Encoding.PEM,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                )
+            )
+            (home / "layers.toml").write_text('[join]\nhost_key = "join.pem"\n')
+        else:
+            for path in (home / "layers").glob("join.*"):
+                path.unlink()
         self.actors: dict[str, Path] = {}
         self.fingerprints: dict[str, str] = {}
         clients = {}

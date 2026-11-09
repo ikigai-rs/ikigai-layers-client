@@ -95,7 +95,9 @@ the text inside an entry, which is whatever its author posted.
   output. These tests run on Linux in CI; native Windows output has not been evaluated.
 - `tests/test_feeds.py` pins public feed labels, concept-tree indentation, join pin
   refusals, question destination refusals, and the absence of private keys in join output.
-  These use a fake door and descriptor, with no assistive technology evaluation.
+  These use a fake door and descriptor. `tests/test_interop.py` also checks public-feed
+  reading and named access refusals after open joining through loopback HTTPS discovery
+  and a real ikigai-cli 0.4.1 door. No assistive technology evaluation has been performed.
 - **No automated accessibility checker, browser or assistive technology has been used on this
   output.** No screen reader or braille display has read the command's output.
 

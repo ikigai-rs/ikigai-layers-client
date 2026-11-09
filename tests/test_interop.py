@@ -6,17 +6,25 @@ interop job). The door is scratch (``tests/layer_door.py``); nothing here reache
 
 from __future__ import annotations
 
+import functools
+import hashlib
+import http.server
 import io
 import json
+import ssl
 import subprocess
 import sys
 import threading
 import time
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 
+from ikigai_layers_client import certs, feeds, join, work
 from ikigai_layers_client import door as door_mod
-from ikigai_layers_client import feeds, work
 from ikigai_layers_client.cli import main
 from tests.layer_door import LayerDoor, require_ikigai
 from tests.test_agent_loop import (  # noqa: F401 - `world` is a fixture
@@ -47,6 +55,113 @@ def run(capsys, *argv, stdin: str | None = None):
             sys.stdin = old
     out, err = capsys.readouterr()
     return code, out, err
+
+
+@pytest.fixture
+def public_door(request, tmp_path):
+    d = LayerDoor(require_ikigai(request), tmp_path / "public-door", public_join=True)
+    try:
+        yield d
+    finally:
+        d.stop()
+
+
+@pytest.fixture
+def discovery_host(public_door, tmp_path, monkeypatch):
+    """Serve the descriptor and QUIC pin over trusted, loopback-only HTTPS."""
+    root = tmp_path / "https"
+    documents = root / ".well-known" / "ikigai"
+    documents.mkdir(parents=True)
+    pem = (public_door.root / "door" / "server.crt").read_text()
+    (documents / "server.crt").write_text(pem)
+    pin = hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem)).hexdigest()
+    (documents / "layers.json").write_text(
+        json.dumps(
+            {
+                "door": public_door.url,
+                "join": "urn:layer:join:say",
+                "server_cert": {"url": "server.crt", "sha256": pin},
+                "public_layers": [{"name": "releases", "type": "ik:Feed", "read_only": True}],
+            }
+        )
+    )
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(certs.NOT_BEFORE)
+        .not_valid_after(certs.NOT_AFTER)
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False)
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    tls_cert, tls_key = root / "https.crt", root / "https.key"
+    tls_cert.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    tls_key.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(tls_cert, tls_key)
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(root))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("SSL_CERT_FILE", str(tls_cert))
+    try:
+        yield f"https://localhost:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=10)
+
+
+@pytest.mark.parametrize("selection", [[], ["releases"]])
+def test_open_join_from_https_discovery_reads_a_real_public_feed(
+    public_door, discovery_host, tmp_path, capsys, selection
+):
+    doc, location = join.descriptor(discovery_host)
+    assert location == discovery_host + join.DESCRIPTOR
+    assert doc["door"] == public_door.url
+    # Publish only to the scratch loopback door; the joining identity starts unknown to it.
+    with door_mod.connect(public_door.url, public_door.actors["alice"]) as connected:
+        posted = connected.sink(
+            "urn:layer:releases:say",
+            "@prefix ik: <https://ikigai-rs.dev/ns#> . [] a ik:Message ; "
+            'ik:body "A public release from the real door." .',
+            **{"as": "application/json"},
+        )
+    entry = json.loads(posted.data)["@id"]
+    directory = tmp_path / "new-reader"
+    assert not directory.exists()
+    code, out, err = run(
+        capsys, "join", discovery_host, *selection, "--cert-dir", str(directory), "--json"
+    )
+    assert code == 0, err
+    grants = json.loads(out)["granted"]
+    assert set(grants) == {"urn:cap:layer:read:releases", "urn:cap:layer:feed:releases"}
+    assert (directory / "config.toml").read_text() == f'door = "{public_door.url}"\n'
+    assert (directory / "server.crt").read_bytes() == (
+        public_door.root / "door" / "server.crt"
+    ).read_bytes()
+    # Use only the saved connection configuration, in a new session after joining.
+    code, out, err = run(capsys, "read", "releases", "--cert-dir", str(directory))
+    assert code == 0, err
+    assert entry in out and "A public release from the real door." in out
+    code, _, err = run(
+        capsys, "say", "releases", "Reader cannot publish.", "--cert-dir", str(directory)
+    )
+    assert code == 1 and "denied" in err
+    code, _, err = run(capsys, "read", "talk", "--cert-dir", str(directory))
+    assert code == 1 and "denied" in err
 
 
 def test_the_door_accepts_a_python_made_certificate_once_enrolled(door, capsys):
