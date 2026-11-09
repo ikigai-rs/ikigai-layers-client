@@ -114,6 +114,22 @@ filters but omits entry descriptions. Its cursor advances past excluded events, 
 as with `--kind`; use a separate `--state FILE` or `--reset FEED` to replay with a different
 filter. Listing the newest entry pages through the feed's entries.
 
+To publish an announcement, use an identity granted writes to the feed:
+
+```sh
+ikigai-layers announce releases 'The release is ready.' --title 'Release news' --concept urn:release:feature --name publisher
+printf '%s\n' 'The release is ready.' | ikigai-layers announce releases - --title 'Release news' --concept urn:release:feature --name publisher
+```
+
+`announce` posts an `ik:Announcement` with `dcterms:title`, `ik:body`, and
+`dcterms:subject`. Give at least one `--concept` IRI; repeat it for multiple concepts.
+Before sending, the client verifies the destination is a feed and reads its `:scheme`
+as JSON. Every concept must be listed in that scheme. Use `feeds FEED --scheme` to
+find the full concept IRIs. The body is text, or stdin with `-` or no body argument;
+trailing newlines from stdin are dropped. Success prints the new entry's IRI
+(`--json` prints the door's JSON answer). The door still enforces write capabilities
+and the feed's shapes; public joining grants reading only.
+
 To ask about a feed entry, use a certificate that also has its own writable Talk channel:
 
 ```sh
@@ -526,6 +542,7 @@ the enrolled set's saved door, otherwise
 | `onboard --door URL --pin SHA256 --invite ID --code CODE` | generate an identity, pin the lobby, request enrollment, poll approval, and save config; `--server-cert FILE`, `--name NAME`, `--once` |
 | `join [HTTPS_HOST] [FEED …]` | join advertised public read-only feeds with no invite; `--name NAME` or `--cert-dir DIR` |
 | `feeds [FEED] [--scheme]` | readable feeds with newest entries, or a feed's SKOS concept tree |
+| `announce FEED [BODY\|-] --title TITLE --concept IRI` | post an `ik:Announcement`; repeat `--concept` for concepts in the feed's scheme |
 | `ask ENTRY [TEXT\|-] [--layer NAME]` | ask about a feed entry in your own writable non-feed channel |
 | `me` | who the door says this actor is (`urn:layers:me`) |
 | `say LAYER [TEXT\|-]` | say one `ik:Message` (stdin with `-` or no TEXT; a trailing newline is dropped); `--question` asks it; `--in-reply-to ENTRY`, `--supersedes ENTRY` |
@@ -568,6 +585,7 @@ else.
 | 6 | `released …`, `report owed …` (`work run --once`) | the offer was taken and not handed back; the lines before it say why |
 | 4 | `refused: the door says this certificate is … and the configuration's actor is …` (`work`) | use the agent's own set, or correct `actor` |
 | 4 | `refused: … is readable by others`, `refused: the loop does not run as root` (`work`) | fix the key's mode, or run as the agent's account |
+| 2 | `concept … is not in feed …'s scheme` (`announce`) | choose a full concept IRI from `feeds FEED --scheme`; nothing was sent |
 | 2 | `no writable non-feed channel for this identity` (`ask`) | use an identity granted its own Talk channel; public feed joining grants reading only |
 | 2 | `several writable channels: …; choose --layer LAYER` (`ask`) | select your destination channel explicitly |
 | 2 | `… differs: kept it; use a separate --name for this door` (`join`) | keep this identity's pin and use another named set |
