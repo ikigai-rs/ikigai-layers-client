@@ -25,7 +25,7 @@ SCHEME = {
 }
 
 
-@pytest.mark.parametrize("command", ["join", "feeds", "entries", "ask"])
+@pytest.mark.parametrize("command", ["join", "feeds", "entries", "ask", "announce"])
 def test_feed_commands_are_available(command, capsys):
     with pytest.raises(SystemExit) as exc:
         main([command, "--help"])
@@ -571,3 +571,153 @@ def test_scheme_keeps_multiple_parents_and_empty_schemes():
     assert sum(CHILD in line for line in lines) == 2
     assert any("(also shown above)" in line for line in lines)
     assert feeds.Scheme({"concepts": []}).lines() == []
+
+
+def test_announce_posts_a_titled_announcement_with_scheme_concepts(feed_door, capsys):
+    assert (
+        main(
+            [
+                "announce",
+                FEED,
+                'Body "quoted"',
+                "--title",
+                'Release "one"',
+                "--concept",
+                PARENT,
+                "--concept",
+                CHILD,
+                "--name",
+                "writer",
+            ]
+        )
+        == 0
+    )
+    assert capsys.readouterr().out.strip() == "urn:layer:talk:entry:question"
+    [(target, turtle)] = feed_door.posts
+    assert target == f"urn:layer:{FEED}:say"
+    assert "a ik:Announcement" in turtle
+    assert r'dcterms:title "Release \"one\""' in turtle
+    assert r'ik:body "Body \"quoted\""' in turtle
+    assert f"dcterms:subject <{PARENT}>, <{CHILD}>" in turtle
+    assert (f"urn:layer:{FEED}:scheme", {"as": "application/json"}) in feed_door.calls
+
+
+@pytest.mark.parametrize("body", [[], ["-"]])
+def test_announce_reads_stdin_and_prints_json(feed_door, monkeypatch, capsys, body):
+    monkeypatch.setattr("sys.stdin", io.StringIO("Announcement body\n"))
+    assert (
+        main(
+            [
+                "announce",
+                FEED,
+                *body,
+                "--title",
+                "News",
+                "--concept",
+                CHILD,
+                "--concept",
+                CHILD,
+                "--name",
+                "writer",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["@id"] == "urn:layer:talk:entry:question"
+    turtle = feed_door.posts[0][1]
+    assert 'ik:body "Announcement body"' in turtle
+    assert turtle.count(f"<{CHILD}>") == 1
+
+
+@pytest.mark.parametrize("concept", ["urn:unknown", CHILD + ":unknown"])
+def test_announce_refuses_unknown_concepts_without_sending(feed_door, capsys, concept):
+    assert (
+        main(
+            [
+                "announce",
+                FEED,
+                "Body",
+                "--title",
+                "News",
+                "--concept",
+                PARENT,
+                "--concept",
+                concept,
+                "--name",
+                "writer",
+            ]
+        )
+        == 2
+    )
+    error = capsys.readouterr().err
+    assert error.startswith("ikigai-layers: concept ")
+    assert f"not in feed `{FEED}`'s scheme" in error
+    assert f"feeds {FEED} --scheme" in error
+    assert not feed_door.posts
+
+
+def test_announce_refuses_nonfeed_without_sending(feed_door, capsys):
+    assert (
+        main(
+            [
+                "announce",
+                "talk",
+                "Body",
+                "--title",
+                "News",
+                "--concept",
+                PARENT,
+                "--name",
+                "writer",
+            ]
+        )
+        == 2
+    )
+    assert "not a feed" in capsys.readouterr().err
+    assert not feed_door.posts
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["Body", "--title", " ", "--concept", PARENT],
+        [" ", "--title", "News", "--concept", PARENT],
+        ["Body", "--title", "News", "--concept", "not-an-iri"],
+        ["Body", "--title", "News", "--concept", "urn:bad>injection"],
+    ],
+)
+def test_announce_bad_input_is_refused_before_dialing(monkeypatch, capsys, options):
+    monkeypatch.setattr(door, "connect", lambda *a, **kw: pytest.fail("dialed the door"))
+    assert main(["announce", FEED, *options, "--name", "writer"]) == 2
+    assert capsys.readouterr().err.startswith("ikigai-layers: ")
+
+
+@pytest.mark.parametrize("scheme", [{}, {"concepts": []}, {"concepts": None}])
+def test_announce_missing_or_empty_scheme_never_sends(feed_door, monkeypatch, capsys, scheme):
+    source = feed_door.source
+
+    def read(iri, **args):
+        if iri.endswith(":scheme"):
+            return answer(scheme)
+        return source(iri, **args)
+
+    monkeypatch.setattr(feed_door, "source", read)
+    assert (
+        main(
+            [
+                "announce",
+                FEED,
+                "Body",
+                "--title",
+                "News",
+                "--concept",
+                PARENT,
+                "--name",
+                "writer",
+            ]
+        )
+        == 2
+    )
+    assert capsys.readouterr().err.startswith("ikigai-layers: ")
+    assert not feed_door.posts

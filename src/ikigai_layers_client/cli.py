@@ -4,6 +4,7 @@
     ikigai-layers onboard --door URL --pin SHA256 --invite ID --code CODE
     ikigai-layers join [HTTPS_HOST] [FEED …]    join public read-only feeds without an invite
     ikigai-layers feeds [FEED] [--scheme]       readable feeds, newest entries, concept tree
+    ikigai-layers announce FEED [BODY|-]        post a titled announcement with concepts
     ikigai-layers ask ENTRY [TEXT|-]            ask about a feed entry in your own channel
     ikigai-layers me                             who the door says this actor is
     ikigai-layers say LAYER [TEXT|-]             say one message (stdin with - or no TEXT)
@@ -130,6 +131,19 @@ def _parser() -> argparse.ArgumentParser:
     thread_args = argparse.ArgumentParser(add_help=False)
     thread_args.add_argument("--in-reply-to", metavar="ENTRY", help="the entry this answers")
     thread_args.add_argument("--supersedes", metavar="ENTRY", help="your entry this replaces")
+
+    announce = commands.add_parser(
+        "announce", parents=[connection], help="post an announcement to a feed"
+    )
+    announce.add_argument("layer", metavar="FEED", help="the destination feed")
+    announce.add_argument("text", nargs="?", default="-", help="the body; - (default) reads stdin")
+    announce.add_argument("--title", required=True, help="the announcement title")
+    announce.add_argument(
+        "--concept",
+        action="append",
+        required=True,
+        help="a concept IRI in the feed's scheme; repeatable",
+    )
 
     say = commands.add_parser(
         "say", parents=[connection, thread_args], help="say one message in a layer"
@@ -342,6 +356,26 @@ def cmd_ask(d: door.Door, args) -> int:
         [f"ik:body {message.literal(args.text)}", f"dcterms:subject {message.iri(args.entry)}"],
     )
     return _say(d, args, turtle)
+
+
+def cmd_announce(d: door.Door, args) -> int:
+    """Check the feed's current scheme before sending an announcement."""
+    feeds.require_feed(d, args.layer)
+    doc = json.loads(d.source(f"urn:layer:{args.layer}:scheme", **{"as": "application/json"}).data)
+    if not isinstance(doc, dict) or not isinstance(doc.get("concepts"), list):
+        raise Usage("the door did not return a concept scheme; nothing was sent")
+    members = {
+        concept["@id"]
+        for concept in doc["concepts"]
+        if isinstance(concept, dict) and isinstance(concept.get("@id"), str)
+    }
+    for concept in args.concept:
+        if concept not in members:
+            raise Usage(
+                f"concept {concept} is not in feed `{args.layer}`'s scheme; "
+                f"choose a concept from feeds {args.layer} --scheme"
+            )
+    return _say(d, args, message.announcement(args.title, args.text, args.concept))
 
 
 def cmd_say(d: door.Door, args) -> int:
@@ -672,6 +706,7 @@ COMMANDS = {
     "entries": cmd_read,
     "feeds": cmd_feeds,
     "ask": cmd_ask,
+    "announce": cmd_announce,
     "tuples": cmd_tuples,
     "out": cmd_out,
     "take": cmd_take,
@@ -707,6 +742,15 @@ def main(argv: list[str] | None = None) -> int:
             if args.repo is not None:
                 message.repository(args.repo)
             args.prepared = _titled_body(args, args.post_kind)
+        if args.command == "announce":
+            for concept in args.concept:
+                message.iri(concept)
+            if not args.title.strip():
+                raise Usage("the title is empty; give the announcement a --title")
+            if args.text == "-":
+                args.text = _read_input("-", "the announcement").rstrip("\n")
+            if not args.text.strip():
+                raise Usage("the announcement is empty; give a body or read it from stdin")
         if args.command == "ask":
             _entry_layer(args.entry)
             message.iri(args.entry)

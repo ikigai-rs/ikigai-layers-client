@@ -18,7 +18,7 @@ tested, and how to report a barrier. It is not a conformance claim. Adapted from
 All of it is terminal text from `src/ikigai_layers_client/`:
 
 - **Answers** (`cli.py`, on stdout): `cert generate` prints where it wrote the pair, the
-  fingerprint and the next steps in sentences; `say`, `post` and `out` print the new entry's IRI;
+  fingerprint and the next steps in sentences; `say`, `announce`, `post` and `out` print the new entry's IRI;
   `save` prints `saved <path> (<n> bytes, <digest>)`; `me` and `take` print indented JSON;
   `tuples` prints one line per tuple or receipt; `--json` prints the door's JSON as it came.
 - **Enrollment** (`onboard.py`, on stdout): `onboard` labels the fingerprint, request,
@@ -98,6 +98,8 @@ the text inside an entry, which is whatever its author posted.
   These use a fake door and descriptor. `tests/test_interop.py` also checks public-feed
   reading and named access refusals after open joining through loopback HTTPS discovery
   and a real ikigai-cli 0.4.1 door. No assistive technology evaluation has been performed.
+- `tests/test_feeds.py` also checks announcement success output and named concept refusals,
+  including that invalid concepts send nothing.
 - **No automated accessibility checker, browser or assistive technology has been used on this
   output.** No screen reader or braille display has read the command's output.
 

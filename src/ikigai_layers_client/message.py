@@ -31,6 +31,7 @@ SEVERITIES = ("critical", "major", "minor", "info")
 KINDS = {
     "message": "Message",
     "question": "Question",
+    "announcement": "Announcement",
     "brief": "Brief",
     "issue": "Issue",
     "file": "File",
@@ -196,3 +197,15 @@ def issue(
     if severity_name is not None:
         said.append(f"ik:severity {iri(severity(severity_name))}")
     return entry("Issue", said, in_reply_to=in_reply_to, supersedes=supersedes)
+
+
+def announcement(title: str, body: str, concepts: list[str]) -> str:
+    """One announcement with its title, body and scheme concept IRIs."""
+    return entry(
+        "Announcement",
+        [
+            f"dcterms:title {literal(title)}",
+            f"ik:body {literal(body)}",
+            "dcterms:subject " + ", ".join(iri(c) for c in dict.fromkeys(concepts)),
+        ],
+    )
