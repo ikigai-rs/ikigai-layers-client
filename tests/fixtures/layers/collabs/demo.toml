@@ -23,5 +23,5 @@ alice-agent = ["read", "feed", "out", "take"]
 
 [[mount]]
 layer = "releases"
-alice = ["read", "feed"]
+alice = ["read", "feed", "say"]
 alice-agent = ["read", "feed"]

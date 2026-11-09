@@ -12,12 +12,12 @@ def pytest_addoption(parser):
     parser.addoption(
         "--require-interop",
         action="store_true",
-        help="build and require the pinned Rust door for interop (needs Cargo and curl)",
+        help="build and require the pinned Rust door for interop (needs Cargo)",
     )
 
 
 def pytest_sessionstart(session):
-    """Use the merged feed host when CI requires interop, before collecting tests."""
+    """Use the published host when CI requires interop, before collecting tests."""
     if not session.config.getoption("--require-interop"):
         return
     root = Path(__file__).resolve().parents[1]
