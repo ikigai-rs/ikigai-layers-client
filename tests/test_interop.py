@@ -23,7 +23,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
-from ikigai_layers_client import certs, feeds, join, work
+from ikigai_layers_client import certs, feeds, join, message, work
 from ikigai_layers_client import door as door_mod
 from ikigai_layers_client.cli import main
 from tests.layer_door import LayerDoor, require_ikigai
@@ -460,3 +460,183 @@ def test_plan_reads_the_real_listing_and_takes_nothing(world, door):  # noqa: F8
     assert f"would take {good}" in world.lines
     assert good in pending_for_alice(door)
     finish(door, [good])
+
+
+# Audit cases use a separate scratch door so their feed history is independent.
+
+
+@pytest.fixture(scope="module")
+def audit_door(request, tmp_path_factory):
+    d = LayerDoor(require_ikigai(request), tmp_path_factory.mktemp("audit-door"))
+    try:
+        yield d
+    finally:
+        d.stop()
+
+
+# talk.toml bounds the complete Turtle request to 16 KiB, including its prefixes.
+_SAY_BYTES = 16384 - len(message.message("").encode("utf-8"))
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'two\nlines "quoted" café ☃',
+        "\ufeffleading BOM",
+        "x" * _SAY_BYTES,
+        "é" * (_SAY_BYTES // 2) + "x" * (_SAY_BYTES % 2),
+    ],
+)
+def test_say_read_exact(audit_door, capsys, body):
+    assert main(["say", "talk", body, *audit_door.args("alice")]) == 0
+    iri = capsys.readouterr().out.strip()
+    assert main(["read", "talk", "--json", *audit_door.args("alice")]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    node = next(n for n in doc["@graph"] if n["@id"] == iri)
+    assert node["body"].encode("utf-8") == body.encode("utf-8")
+
+
+def test_save_does_not_replace_a_file_created_during_download(
+    audit_door, capsys, tmp_path, monkeypatch
+):
+    from ikigai_layers_client import cli
+
+    original = tmp_path / "source.txt"
+    original.write_bytes(b"from the layer")
+    assert main(["post", "file", "work", str(original), *audit_door.args("alice")]) == 0
+    iri = capsys.readouterr().out.strip()
+    target = tmp_path / "download.txt"
+    mkstemp = cli.tempfile.mkstemp
+
+    def competing_writer(*args, **kwargs):
+        # Another save finishes after the existence check but before publication.
+        target.write_bytes(b"from the other save")
+        return mkstemp(*args, **kwargs)
+
+    monkeypatch.setattr(cli.tempfile, "mkstemp", competing_writer)
+    code = main(["save", iri, str(target), *audit_door.args("alice")])
+    out, err = capsys.readouterr()
+    assert target.read_bytes() == b"from the other save"
+    assert code == 2 and "exists" in err and out == ""
+    assert not list(tmp_path.glob(".ikigai-layers-*"))
+
+
+@pytest.mark.parametrize(
+    ("body", "code", "reason"), [("", 2, "empty"), ("x" * (_SAY_BYTES + 1), 1, "16384")]
+)
+def test_say_refusals(audit_door, capsys, body, code, reason):
+    assert main(["say", "talk", body, *audit_door.args("alice")]) == code
+    out, err = capsys.readouterr()
+    assert out == "" and err.startswith("ikigai-layers: ") and reason in err
+
+
+def test_two_clients_race_to_take_one_offer(audit_door, capsys):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from ikigai_layers_client import door as door_mod
+
+    subject = "urn:layer:offers:offer:audit-race"
+    turtle = (
+        "@prefix ik: <https://ikigai-rs.dev/ns#> . "
+        "@prefix dcterms: <http://purl.org/dc/terms/> . "
+        f'<{subject}> a ik:Offer ; dcterms:title "Race" ; ik:brief "One winner." ; '
+        "ik:repository <https://github.com/example/repo> ."
+    )
+    with door_mod.connect(audit_door.url, audit_door.actors["alice"]) as d:
+        d.sink("urn:layer:offers:tuples", turtle, **{"as": "application/json"})
+
+    barrier = threading.Barrier(2)
+
+    def take(actor):
+        barrier.wait(timeout=10)
+        return actor, subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "ikigai_layers_client",
+                "take",
+                "offers",
+                subject,
+                "--json",
+                *audit_door.args(actor),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(take, ["alice", "alice-agent"]))
+    winners = [(actor, done) for actor, done in results if done.returncode == 0]
+    assert len(winners) == 1, results
+    winner, done = winners[0]
+    assert any(n["@id"] == subject for n in json.loads(done.stdout)["@graph"])
+    loser = next(done for _, done in results if done.returncode != 0)
+    assert loser.returncode == 1 and loser.stdout == ""
+    assert loser.stderr.startswith("ikigai-layers: conflict:")
+    assert f"urn:collab:participant:{winner}" in loser.stderr
+    assert main(["tuples", "offers", "--taken", *audit_door.args("alice")]) == 0
+    out, err = capsys.readouterr()
+    assert subject in out and f"urn:collab:participant:{winner}" in out and not err
+
+
+def test_follow_resumes_in_order_after_restart(audit_door, capsys, tmp_path):
+    import subprocess
+    import time
+
+    import ikigai
+
+    from ikigai_layers_client import door as door_mod
+    from ikigai_layers_client import follow
+
+    def post(body):
+        with door_mod.connect(audit_door.url, audit_door.actors["alice"], timeout=2) as d:
+            return json.loads(
+                d.sink(
+                    "urn:layer:talk:say", message.message(body), **{"as": "application/json"}
+                ).data
+            )["@id"]
+
+    before = post("before restart")
+    lines = []
+    f = follow.Follower(
+        lambda timeout: door_mod.connect(audit_door.url, audit_door.actors["alice"], timeout=2),
+        layers=["talk"],
+        state=str(tmp_path / "cursor"),
+        wait=1,
+        say=lines.append,
+        describe=True,
+    )
+    try:
+        assert f.run(once=True) == 0
+        assert any(before in line for line in lines)
+        cursor = follow.read_state(f.state)
+        argv = [audit_door.url if a == "quic://127.0.0.1:0" else a for a in audit_door.process.args]
+        audit_door.stop()
+        audit_door.process = subprocess.Popen(
+            argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        deadline = time.monotonic() + 20
+        while True:
+            try:
+                after = post("after restart")
+                break
+            except ikigai.ConnectionLost:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.1)
+        # Reuse the connection that the host restart broke, with the saved cursor.
+        lines.clear()
+        assert f.run(once=True) == 0
+        assert len(lines) == 1 and after in lines[0]
+        assert follow.read_state(f.state)["talk"] == cursor["talk"] + 1
+    finally:
+        f.close()
+    # A new process using the same state must see neither entry again.
+    assert (
+        main(
+            ["follow", "--once", "--layers", "talk", "--state", f.state, *audit_door.args("alice")]
+        )
+        == 0
+    )
+    assert capsys.readouterr().out == ""

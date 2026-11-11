@@ -363,8 +363,9 @@ directory: the file's own name in it; no `PATH`: your downloads directory), afte
 size and its SHA-256 against what the entry says. The door checks that an entry is well formed,
 never that its digest is true, so this check is the one that matters: when either does not
 match, nothing is written and it exits 1. It will not replace an existing file without
-`--force` (which replaces it, and its old content is lost), and it refuses a name with a
-directory in it, so a file can only land where you pointed it.
+`--force` (which replaces it, and its old content is lost), even if another save creates the
+target while this download is being written. It refuses a name with a directory in it, so a
+file can only land where you pointed it.
 
 **Where it lands, and which names it refuses.** A file's name is whatever its poster chose, so
 `save` will not write one that would do something on your machine just by being there:
@@ -590,6 +591,7 @@ else.
 | 2 | `several writable channels: …; choose --layer LAYER` (`ask`) | select your destination channel explicitly |
 | 2 | `… differs: kept it; use a separate --name for this door` (`join`) | keep this identity's pin and use another named set |
 | 4 | `refused: server.crt does not match the descriptor sha256: nothing was sent` (`join`) | get a corrected discovery descriptor and server certificate from the operator |
+| 2 | `… exists: give another PATH, --as NAME, or --force to replace it (its old content is lost)` | another file already occupies the save target, including one created during the download; choose another name or explicitly allow replacement |
 | 2 | a usage problem, or a file in your set: `…/server.crt is missing: it should hold the door's certificate` | fix the named file or argument |
 | 2 | `[agent] command passes {prompt} to sh, which would run an offer's text as shell commands` (`work`) | leave `{prompt}` out to get the prompt on stdin, or use `{prompt_file}` |
 | 4 | `refused: … does not match --pin: nothing was sent` | get the door certificate and fingerprint from the operator again |
