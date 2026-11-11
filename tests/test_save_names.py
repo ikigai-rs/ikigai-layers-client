@@ -282,6 +282,42 @@ class SaveTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual((self.cwd / "notes.md").read_bytes(), b"hello\n")
 
+    def test_a_file_created_while_saving_is_preserved_without_force(self):
+        target = self.cwd / "notes.md"
+        mkstemp = tempfile.mkstemp
+
+        def competing_writer(*args, **kwargs):
+            target.write_bytes(b"another save finished first\n")
+            return mkstemp(*args, **kwargs)
+
+        with mock.patch.object(tempfile, "mkstemp", side_effect=competing_writer):
+            code, out, err, _ = self.save(file_node("notes.md"), str(self.cwd))
+        self.assertEqual(target.read_bytes(), b"another save finished first\n")
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("--force to replace it", err)
+        self.assertEqual(list(self.cwd.iterdir()), [target])
+
+    def test_an_interrupted_write_leaves_no_partial_download(self):
+        fdopen = os.fdopen
+
+        @contextlib.contextmanager
+        def interrupted(fd, mode):
+            with fdopen(fd, mode) as stream:
+
+                def write(data):
+                    stream.write(data[:2])
+                    raise OSError("download write interrupted")
+
+                yield SimpleNamespace(write=write)
+
+        with mock.patch.object(os, "fdopen", side_effect=interrupted):
+            code, out, err, _ = self.save(file_node("notes.md"), str(self.cwd))
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("download write interrupted", err)
+        self.assertEqual(list(self.cwd.iterdir()), [])
+
     def test_help_says_force_replaces_an_existing_file(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):

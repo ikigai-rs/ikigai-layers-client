@@ -542,11 +542,12 @@ def cmd_save(d: door.Door, args) -> int:
         _err(f"not saved: {e}")
         return EXIT_DOOR_ERROR
     target = _target(name, args.path, args.save_dir)
+    exists_message = (
+        f"{target} exists: give another PATH, --as NAME, or --force to replace it "
+        "(its old content is lost)"
+    )
     if target.exists() and not args.force:
-        raise Usage(
-            f"{target} exists: give another PATH, --as NAME, or --force to replace it "
-            "(its old content is lost)"
-        )
+        raise Usage(exists_message)
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".ikigai-layers-", dir=target.parent)
     try:
@@ -556,7 +557,16 @@ def cmd_save(d: door.Door, args) -> int:
         mask = os.umask(0)
         os.umask(mask)
         os.chmod(tmp, 0o666 & ~mask)
-        os.replace(tmp, target)
+        if args.force:
+            os.replace(tmp, target)
+        else:
+            # Publish the complete file only if the target is still absent. Checking
+            # exists() before os.replace() would overwrite a competing save's result.
+            try:
+                os.link(tmp, target)
+            except FileExistsError as e:
+                raise Usage(exists_message) from e
+            os.unlink(tmp)
     except BaseException:
         try:
             os.unlink(tmp)
