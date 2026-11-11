@@ -626,9 +626,18 @@ def test_follow_resumes_in_order_after_restart(audit_door, capsys, tmp_path):
                     raise
                 time.sleep(0.1)
         # Reuse the connection that the host restart broke, with the saved cursor.
+        # Continuous follow retries outages; --once is documented to exit 5 on one.
+        deadline = time.monotonic() + 60
+
+        def retry(_delay):
+            assert time.monotonic() < deadline, "follow did not resume after the restart"
+            time.sleep(0.05)
+
+        f.sleep = retry
         lines.clear()
-        assert f.run(once=True) == 0
-        assert len(lines) == 1 and after in lines[0]
+        assert f.run(max_reads=1) == 0
+        events = [line for line in lines if line.startswith("talk ")]
+        assert len(events) == 1 and after in events[0]
         assert follow.read_state(f.state)["talk"] == cursor["talk"] + 1
     finally:
         f.close()
