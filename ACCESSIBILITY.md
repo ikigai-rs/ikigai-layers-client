@@ -77,12 +77,15 @@ the text inside an entry, which is whatever its author posted.
 Every named check has a result: Pass, Fail or Blocked, with evidence. Pass covers only the
 stated check, not overall accessibility or WCAG conformance. The automated checks below ran
 on 2026-11-12 against main commit `16f66f1d3f205afec7081942ff53fb04265d3cc5`, before this
-documentation change, using Python 3.13.18, pytest 9.2.0 and Ruff 0.17.5 on macOS 27.2.
-`scripts/gates.sh` runs `.venv/bin/python -m ruff check .`,
+documentation change, using Python 3.13.18, pytest 9.2.0, Ruff 0.17.5 and
+ikigai-cli 0.4.1 on macOS 27.2.
+`PATH="$PWD/.interop-build/tools/bin:$PATH" scripts/gates.sh` runs
+`.venv/bin/python -m ruff check .`,
 `.venv/bin/python -m ruff format --check .` and `.venv/bin/python -m pytest -q`.
-The gates run excluded PATH entries containing `ikigai` to avoid the incompatible system
-ikigai 0.2.9. The test-file rows below all refer to that pytest invocation. Tests inspect
-captured strings and behavior; they do not establish how a terminal or assistive technology presents output.
+The pinned door was built by
+`.venv/bin/python -m pytest -q --require-interop tests/test_interop.py tests/test_work.py`
+(45 passed), which calls `scripts/install-interop-door.sh`. The test-file rows below refer
+to the full gates invocation. Tests inspect captured strings and behavior; they do not establish how a terminal or assistive technology presents output.
 
 | Check | Result | Evidence |
 |---|---|---|
@@ -93,8 +96,8 @@ captured strings and behavior; they do not establish how a terminal or assistive
 | Enrollment status, pending approval, refusal prefix and exclusion of pairing codes/private keys | Pass | `tests/test_onboard.py`, including `test_generate_post_resume_and_configure_without_external_programs` and `test_current_revocation_never_writes_config`. Local lobby fixtures; no native Windows evaluation. |
 | Feed labels, concept-tree indentation/cycles, join and question refusals, and exclusion of private keys | Pass | `tests/test_feeds.py`, including `test_feeds_list_only_feed_definitions_and_the_newest_entry`, `test_scheme_prints_concept_labels_and_hierarchy`, `test_scheme_cycles_terminate_and_are_named` and `test_join_creates_an_identity_pins_the_door_and_joins_all_public_feeds`. Fake door and descriptor; no real public service. |
 | Announcement output and concept refusals before sending | Pass | `tests/test_feeds.py`, `test_announce_posts_a_titled_announcement_with_scheme_concepts` and `test_announce_refuses_unknown_concepts_without_sending`. Captured output and fake-door calls only. |
-| Lint, formatting and local regression suite | Pass | `scripts/gates.sh`, with the tool versions above. 357 passed, 45 skipped, 107 subtests passed. Code hygiene and regression checks, not an automated accessibility checker; this run excluded the incompatible system `ikigai` from PATH. |
-| Real-door output and named access refusals | Blocked | The installed ikigai 0.2.9 could not open the current layer fixtures (45 setup errors). With its PATH entry excluded, real-door cases in `tests/test_interop.py` and `tests/test_work.py` skip. CI's `interop` job requires these files with `--require-interop` and builds ikigai-cli 0.4.1 via `scripts/install-interop-door.sh`; this local evaluation does not claim that run as a Pass. |
+| Lint, formatting and local regression suite | Pass | `scripts/gates.sh`, with the tool versions above. 402 passed, 107 subtests passed, no skipped tests. Code hygiene and regression checks, not an automated accessibility checker. |
+| Real-door output and named access refusals | Pass | `tests/test_interop.py` and `tests/test_work.py` with ikigai-cli 0.4.1, both in the required interop command above and the full gates. Includes `test_an_unenrolled_certificate_is_refused_naming_its_fingerprint`, public-feed reading through loopback HTTPS discovery, and entry/file output. Uses a scratch loopback door, not a production service or assistive technology. CI repeats these files in its `interop` job with `--require-interop`. |
 | Native Windows terminal output | Blocked | No Windows terminal session was available; local checks ran on macOS, and CI uses Linux. |
 | Browser presentation of output and documentation | Blocked | No browser evaluation was performed. The command emits terminal text, not HTML or SVG; rendering by GitHub or another consumer has not been checked. |
 | Automated accessibility checker | Blocked | No axe or other accessibility checker was configured or run on the output or rendered documentation. Pytest string assertions are not such a checker. |
