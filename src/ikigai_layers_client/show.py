@@ -9,11 +9,16 @@ content: a file is saved with ``ikigai-layers save ENTRY``, not printed.
 
 from __future__ import annotations
 
+import unicodedata
+
 from .files import one
 from .message import KINDS
 
 #: How much of a message ``follow`` shows on its one line.
 PREVIEW = 72
+#: The bidirectional controls (embeddings, overrides, isolates and marks), which reorder what
+#: a terminal shows: ``exe.txt`` written as ``U+202E txt.exe``.
+_BIDI = frozenset("\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
 
 
 def kind(node: dict) -> str:
@@ -24,11 +29,28 @@ def kind(node: dict) -> str:
     for known in KINDS.values():
         if known in types:
             return known
-    return ",".join(types)
+    return flat(",".join(map(str, types)))
+
+
+def flat(value) -> str:
+    """``value`` as text for one line: its whitespace runs (newlines included) as one space,
+    and every other control character (ESC, BEL), line or paragraph separator and bidi control
+    (:data:`_BIDI`) as its Python escape, so another participant's words can neither start a
+    line of their own, nor drive the terminal, nor reorder what it shows.
+
+    >>> flat("a.txt\\n\\x1b[2J\\u202egnp")
+    'a.txt \\\\x1b[2J\\\\u202egnp'
+    """
+    return "".join(
+        (f"\\x{ord(c):02x}" if ord(c) < 0x100 else f"\\u{ord(c):04x}")
+        if c in _BIDI or unicodedata.category(c) in ("Cc", "Zl", "Zp")
+        else c
+        for c in " ".join(str(value).split())
+    )
 
 
 def _quoted(text, limit: int | None = None) -> str:
-    text = " ".join(str(text).split())
+    text = flat(text)
     if limit is not None and len(text) > limit:
         text = text[: limit - 1] + "…"
     return '"' + text + '"'
@@ -46,16 +68,16 @@ def summary(node: dict) -> str:
     k = kind(node)
     if k == "Brief":
         repo = one(node.get("repository"))
-        return f"Brief {_quoted(one(node.get('title')))}" + (f" {repo}" if repo else "")
+        return f"Brief {_quoted(one(node.get('title')))}" + (f" {flat(repo)}" if repo else "")
     if k == "Issue":
         level = one(node.get("severity"))
-        level = f" {str(level).rsplit(':', 1)[-1]}" if level else ""
+        level = f" {flat(str(level).rsplit(':', 1)[-1])}" if level else ""
         return f"Issue{level} {_quoted(one(node.get('title')))}"
     if k == "File":
-        digest = str(one(node.get("contentHash")) or "")
+        digest = flat(one(node.get("contentHash")) or "")
         return (
-            f"File {one(node.get('fileName'))} {one(node.get('byteSize'))} bytes "
-            f"{one(node.get('mediaType'))} {digest[:19]}…"
+            f"File {flat(one(node.get('fileName')))} {flat(one(node.get('byteSize')))} bytes "
+            f"{flat(one(node.get('mediaType')))} {digest[:19]}…"
         )
     title = one(node.get("title"))
     if title is not None:
@@ -80,29 +102,29 @@ def lines(node: dict) -> list[str]:
     entry_id = node.get("@id", "?")
     k = kind(node)
     out = [
-        f"{one(node.get('seq')) or '?'} {one(node.get('created')) or '?'} "
-        f"{one(node.get('attributedTo')) or '?'} {k} {entry_id}"
+        f"{flat(one(node.get('seq')) or '?')} {flat(one(node.get('created')) or '?')} "
+        f"{flat(one(node.get('attributedTo')) or '?')} {k} {flat(entry_id)}"
     ]
     for term, words in (("inReplyTo", "in reply to"), ("supersedes", "supersedes")):
         target = one(node.get(term))
         if target:
-            out.append(f"    {words} {target}")
+            out.append(f"    {words} {flat(target)}")
     if k == "File":
         out.append(
-            f"    file: {one(node.get('fileName'))} ({one(node.get('byteSize'))} bytes, "
-            f"{one(node.get('mediaType'))}, {one(node.get('encoding'))})"
+            f"    file: {flat(one(node.get('fileName')))} ({flat(one(node.get('byteSize')))} "
+            f"bytes, {flat(one(node.get('mediaType')))}, {flat(one(node.get('encoding')))})"
         )
-        out.append(f"    digest: {one(node.get('contentHash'))}")
-        out.append(f"    save it with: ikigai-layers save {entry_id}")
+        out.append(f"    digest: {flat(one(node.get('contentHash')))}")
+        out.append(f"    save it with: ikigai-layers save {flat(entry_id)}")
         return out
     if k in ("Brief", "Issue") or one(node.get("title")) is not None:
-        out.append(f"    title: {one(node.get('title'))}")
+        out.append(f"    title: {flat(one(node.get('title')))}")
         level = one(node.get("severity"))
         if level:
-            out.append(f"    severity: {str(level).rsplit(':', 1)[-1]}")
+            out.append(f"    severity: {flat(str(level).rsplit(':', 1)[-1])}")
         repo = one(node.get("repository"))
         if repo:
-            out.append(f"    repository: {repo}")
+            out.append(f"    repository: {flat(repo)}")
         out.append("")
     body = one(node.get("body"))
     if body is not None:

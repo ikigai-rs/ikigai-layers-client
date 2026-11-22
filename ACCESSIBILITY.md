@@ -58,9 +58,13 @@ the text inside an entry, which is whatever its author posted.
 ## The rules that output follows
 
 - **No client-added color or cursor movement.** Client-authored output uses printed lines
-  without redraws. Entry text and door messages are passed through; this is not a guarantee
-  that their content contains no terminal control sequences. Reading order with assistive
-  technology has not been evaluated.
+  without redraws. Each one-line field of an entry (a `follow` summary; `read`'s header, file,
+  digest, title, severity and repository lines) has its whitespace runs, newlines included,
+  shown as one space, and its control characters (ESC, BEL), line separators and bidi controls
+  shown as their escapes (`\x1b`, `\u202e`), so an entry's words never start a line of their
+  own. A message's or a brief's body under `read`, and door messages, are passed through; this
+  is not a guarantee that their content contains no terminal control sequences. Reading order
+  with assistive technology has not been evaluated.
 - **Meaning is in words.** A refusal says what was refused and, where this side can know, what to
   do (`save it under another name with --as NAME`, `Resynchronize with --reset <layer>`); the
   exit code repeats it and is never the only signal.
@@ -153,3 +157,4 @@ technology, if you are comfortable sharing them. Anything security-sensitive goe
 | 2026-11-03 | Added the `work` agent loop's lines, refusals and tests, with its stop file's lines and its refusal of a prompt passed to a shell. |
 | 2026-11-08 | Added public feed joining, listings, scheme trees and question routing, with fake-door output and refusal tests. |
 | 2026-11-12 | Recorded current automated checks and unrun evaluations in a Pass / Fail / Blocked evidence table; clarified the limits of terminal-output checks. |
+| 2026-11-22 | Escaped newlines, control characters and bidi controls in `follow` summaries and `read`'s one-line fields; tested in `tests/test_follow.py`. |

@@ -6,4 +6,4 @@ messages, post briefs, issues and files (and save a file back, its digest checke
 and take work in a tuplespace. No Rust toolchain is needed.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"

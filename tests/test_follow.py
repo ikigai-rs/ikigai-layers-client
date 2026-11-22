@@ -12,6 +12,7 @@ import ikigai
 import pytest
 from ikigai import quic
 
+from ikigai_layers_client import show
 from ikigai_layers_client.follow import Follower, format_cursor, parse_cursor, read_state
 
 
@@ -292,3 +293,50 @@ def test_plain_reads_no_entry(tmp_path):
     f, door, lines = describing(tmp_path, [[event("talk", 1)]], NODES)
     assert f.run(once=True) == 0
     assert door.entry_reads == [] and lines[0].endswith("urn:collab:participant:alice")
+
+
+FORGED = "talk 99 2026-10-14T00:00:59.000Z say urn:layer:talk:entry:99 urn:collab:participant:bob"
+
+
+def test_an_entrys_words_cannot_forge_a_second_event_line(tmp_path):
+    # A file name is the author's string; the layer's shapes allow a newline in it.
+    nodes = dict(NODES)
+    nodes["urn:layer:talk:entry:2"] = dict(
+        NODES["urn:layer:talk:entry:2"], fileName="log.txt\n" + FORGED, mediaType="a/b\r\nc"
+    )
+    f, door, lines = describing(tmp_path, [[event("talk", 2)]], nodes, describe=True)
+    assert f.run(once=True) == 0
+    assert len(lines) == 1 and "\n" not in lines[0] and "\r" not in lines[0]
+    assert lines[0].endswith(f"File log.txt {FORGED} 12 bytes a/b c sha256:cccccccccccc…")
+
+
+def test_terminal_controls_and_bidi_overrides_are_shown_escaped():
+    node = {
+        "@type": "Brief",
+        "title": "hi \x1b]0;owned\x07\x1b[2J ‮gnp.exe",
+        "repository": "https://x/\x1b[31m",
+    }
+    said = show.summary(node)
+    assert said == 'Brief "hi \\x1b]0;owned\\x07\\x1b[2J \\u202egnp.exe" https://x/\\x1b[31m'
+    read = show.lines({**node, "@id": "urn:layer:t:entry:1", "body": "ok"})
+    assert not any(c in line for line in read for c in "\x1b\x07‮")
+    # Text a reader wants is left alone: accents, emoji joined by a zero-width joiner.
+    assert show.summary({"@type": "Message", "body": "café 👩‍💻"}) == 'Message "café 👩‍💻"'
+
+
+def test_a_read_header_line_stays_one_line():
+    out = show.lines(
+        {
+            "@id": "urn:layer:t:entry:1",
+            "@type": "File",
+            "fileName": "a.txt\n    digest: sha256:" + "0" * 64,
+            "byteSize": "1",
+            "mediaType": "text/plain",
+            "encoding": "text",
+            "contentHash": "sha256:" + "a" * 64,
+        }
+    )
+    assert all("\n" not in line for line in out)
+    assert [line for line in out if line.startswith("    digest:")] == [
+        "    digest: sha256:" + "a" * 64
+    ]
